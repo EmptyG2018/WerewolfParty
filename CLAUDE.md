@@ -2,12 +2,15 @@
 
 ## 一、项目概述
 
-狼人杀局域网联机游戏，支持4-10人游戏，无法官模式，所有玩家参与游戏。
+狼人杀局域网联机游戏，支持 7-15 人游戏，无法官模式，所有玩家参与游戏。适用于露营、聚会等面对面场景，发言通过口头描述，系统提供轮流发言管理和投票功能。
 
 ### 核心特性
-- 局域网联机（自动发现 + 手动输入IP）
+- 局域网联机（手动输入 IP 加入）
 - 无法官模式（游戏流程自动化）
 - 角色可配置（狼人、村民、预女猎守）
+- 角色预设（9人/12人/15人标准局）
+- 轮流发言机制（随机顺序，手动确认发言完毕）
+- 玩家人数：7-15 人
 
 ## 二、技术栈
 
@@ -28,7 +31,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                        客户端 (React)                        │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ 房间管理  │  │ 游戏界面  │  │ 聊天系统  │  │ 状态显示  │    │
+│  │ 房间管理  │  │ 游戏界面  │  │ 发言管理  │  │ 状态显示  │    │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
 └─────────────────────────────────────────────────────────────┘
                               │ Socket.IO
@@ -47,20 +50,18 @@
 
 ```typescript
 interface Room {
-  id: string;                    // 房间ID (6位数字)
+  id: string;                    // 房间ID (6位字母数字)
   hostId: string;                // 房主玩家ID
   players: Player[];             // 玩家列表
   config: RoomConfig;            // 房间配置
-  gameState: GameState | null;   // 游戏状态
   status: 'waiting' | 'playing' | 'finished';
   createdAt: number;
 }
 
 interface RoomConfig {
-  maxPlayers: number;            // 最大玩家数 (4-10)
+  maxPlayers: number;            // 最大玩家数 (7-15)
   roles: Role[];                 // 启用的角色
-  wolfCount: number;             // 狼人数量 (1-2)
-  discussTime: number;           // 讨论时间 (秒)
+  wolfCount: number;             // 狼人数量
   voteTime: number;              // 投票时间 (秒)
 }
 ```
@@ -82,6 +83,7 @@ interface Player {
 interface SkillUsed {
   witchSave: boolean;            // 女巫解药已用
   witchPoison: boolean;          // 女巫毒药已用
+  lastGuardTarget: string | null;// 守卫上一晚守护目标
 }
 ```
 
@@ -96,39 +98,63 @@ enum Role {
   HUNTER = 'hunter',             // 猎人
   GUARD = 'guard'                // 守卫
 }
+```
 
-interface RoleInfo {
-  id: Role;
-  name: string;
-  camp: 'villager' | 'werewolf';
-  description: string;
-  skill: string;
-  canDisable: boolean;           // 是否可禁用
+### 4.4 角色预设 (RolePreset)
+
+```typescript
+interface RolePreset {
+  id: string;
+  name: string;                  // "9人标准局"
+  playerCount: number;           // 9 | 12 | 15
+  roles: Role[];                 // 启用的角色
+  wolfCount: number;             // 狼人数量
+}
+
+// 预设配置
+ROLE_PRESETS = [
+  { id: 'preset-9',  name: '9人标准局',  playerCount: 9,  wolfCount: 3 },
+  { id: 'preset-12', name: '12人进阶局', playerCount: 12, wolfCount: 4 },
+  { id: 'preset-15', name: '15人豪华局', playerCount: 15, wolfCount: 5 },
+]
+```
+
+### 4.5 发言状态 (SpeakingState)
+
+```typescript
+interface SpeakingState {
+  order: string[];               // 发言顺序（玩家ID列表，随机打乱）
+  currentIndex: number;          // 当前发言者索引
+  confirmed: string[];           // 已确认发言完毕的玩家ID
 }
 ```
 
-### 4.4 游戏状态 (GameState)
+### 4.6 游戏状态 (GameState)
 
 ```typescript
 interface GameState {
   phase: GamePhase;
   day: number;                   // 第几天
   nightActions: NightAction[];   // 夜晚行动记录
-  dayActions: DayAction[];       // 白天行动记录
   deadPlayers: DeadPlayer[];     // 死亡玩家
-  messages: ChatMessage[];       // 聊天记录
+  systemMessages: SystemMessage[];// 系统消息
   phaseTimer: number;            // 阶段倒计时
   winner: 'villager' | 'werewolf' | null;
+  votes: Record<string, string>; // 投票记录
+  speaking: SpeakingState | null;// 发言状态
+  // ...其他字段
 }
 
 enum GamePhase {
+  WAITING = 'waiting',
   NIGHT_WEREWOLF = 'night_werewolf',
   NIGHT_SEER = 'night_seer',
   NIGHT_WITCH = 'night_witch',
   NIGHT_GUARD = 'night_guard',
   DAY_ANNOUNCE = 'day_announce',
-  DAY_DISCUSS = 'day_discuss',
+  DAY_SPEAKING = 'day_speaking', // 轮流发言（替代原 DAY_DISCUSS）
   DAY_VOTE = 'day_vote',
+  HUNTER_SHOOT = 'hunter_shoot',
   GAME_OVER = 'game_over'
 }
 ```
@@ -139,49 +165,45 @@ enum GamePhase {
 
 ```typescript
 // 客户端 -> 服务端
-interface ClientEvents {
-  'room:create': (data: { playerName: string, config: RoomConfig }) => void;
-  'room:join': (data: { roomId: string, playerName: string }) => void;
-  'room:leave': () => void;
-  'room:updateConfig': (data: Partial<RoomConfig>) => void;
-  'room:start': () => void;
-}
+'room:create'      // { playerName, config }
+'room:join'        // { roomId, playerName }
+'room:leave'       // ()
+'room:updateConfig' // { Partial<RoomConfig> }
+'room:start'       // ()
 
 // 服务端 -> 客户端
-interface ServerEvents {
-  'room:created': (data: { roomId: string }) => void;
-  'room:joined': (data: { room: Room }) => void;
-  'room:updated': (data: { room: Room }) => void;
-  'room:error': (data: { message: string }) => void;
-  'room:playerJoined': (data: { player: Player }) => void;
-  'room:playerLeft': (data: { playerId: string }) => void;
-}
+'room:created'     // { roomId }
+'room:joined'      // { room }
+'room:updated'     // { room }
+'room:error'       // { message }
+'room:playerJoined' // { player }
+'room:playerLeft'  // { playerId }
 ```
 
 ### 5.2 游戏事件
 
 ```typescript
 // 客户端 -> 服务端
-interface ClientEvents {
-  'game:werewolfKill': (data: { targetId: string }) => void;
-  'game:seerCheck': (data: { targetId: string }) => void;
-  'game:witchSave': () => void;
-  'game:witchPoison': (data: { targetId: string }) => void;
-  'game:guardProtect': (data: { targetId: string }) => void;
-  'game:vote': (data: { targetId: string }) => void;
-  'game:chat': (data: { message: string }) => void;
-}
+'game:werewolfKill'  // { targetId }
+'game:seerCheck'     // { targetId }
+'game:witchSave'     // ()
+'game:witchPoison'   // { targetId }
+'game:guardProtect'  // { targetId }
+'game:vote'          // { targetId }
+'game:speakingDone'  // () — 当前发言者确认发言完毕
+'game:hunterShoot'   // { targetId }
 
 // 服务端 -> 客户端
-interface ServerEvents {
-  'game:started': (data: { gameState: GameState, myRole: Role }) => void;
-  'game:phaseChanged': (data: { phase: GamePhase, timer: number }) => void;
-  'game:playerDead': (data: { playerId: string, reason: string }) => void;
-  'game:seerResult': (data: { playerId: string, isWerewolf: boolean }) => void;
-  'game:voteResult': (data: { votes: Record<string, number>, eliminated: string | null }) => void;
-  'game:over': (data: { winner: string, players: Player[] }) => void;
-  'game:message': (data: ChatMessage) => void;
-}
+'game:started'        // { gameState, myRole }
+'game:phaseChanged'   // { phase, timer, speaking? }
+'game:speakingUpdate' // { speaking } — 发言进度更新
+'game:playerDead'     // { playerId, reason }
+'game:seerResult'     // { playerId, isWerewolf }
+'game:voteResult'     // { votes, eliminated }
+'game:over'           // { winner, players }
+'game:systemMessage'  // { id, content, timestamp }
+'game:error'          // { message }
+'game:hunterRequired' // { playerId }
 ```
 
 ## 六、游戏状态机
@@ -191,57 +213,53 @@ interface ServerEvents {
                     │   WAITING       │
                     │   (等待开始)     │
                     └────────┬────────┘
-                             │ 房主点击开始
+                             │ 房主点击开始 (≥7人)
                              ▼
                     ┌─────────────────┐
-                    │   NIGHT_START   │
-                    │   (夜晚开始)     │
+                    │  NIGHT_WEREWOLF │
+                    │  (狼人选择击杀)  │
                     └────────┬────────┘
                              │
               ┌──────────────┼──────────────┐
               ▼              ▼              ▼
     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-    │ WEREWOLF    │  │ SEER        │  │ GUARD       │
-    │ (狼人行动)   │→│ (预言家查验) │→│ (守卫守护)   │
+    │ NIGHT_SEER  │  │ NIGHT_GUARD │  │ NIGHT_WITCH │
+    │ (预言家查验) │  │ (守卫守护)   │  │ (女巫行动)   │
     └─────────────┘  └─────────────┘  └─────────────┘
-              │
-              ▼
-    ┌─────────────┐
-    │ WITCH       │
-    │ (女巫行动)   │
-    └─────────────┘
-              │
-              ▼
-    ┌─────────────┐
-    │ DAY_ANNOUNCE│
-    │ (公布死亡)   │
-    └─────────────┘
-              │
-              ▼
-    ┌─────────────┐
-    │ DAY_DISCUSS │
-    │ (自由讨论)   │
-    └─────────────┘
-              │
-              ▼
-    ┌─────────────┐
-    │ DAY_VOTE    │
-    │ (投票淘汰)   │
-    └─────────────┘
-              │
-              ▼
-    ┌─────────────┐
-    │ 胜负判定     │
-    └─────────────┘
-         │    │
-         │    │ 游戏继续
-         │    └──→ 回到 NIGHT_START
-         │
-         ▼
-    ┌─────────────┐
-    │ GAME_OVER   │
-    │ (游戏结束)   │
-    └─────────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │  DAY_ANNOUNCE   │
+                    │  (公布死亡信息)  │
+                    └────────┬────────┘
+                             │ 5秒后
+                             ▼
+                    ┌─────────────────┐
+                    │  DAY_SPEAKING   │
+                    │  (轮流发言)      │
+                    │  随机顺序        │
+                    │  当前发言者确认   │
+                    │  「发言完毕」     │
+                    └────────┬────────┘
+                             │ 全部发言完毕
+                             ▼
+                    ┌─────────────────┐
+                    │    DAY_VOTE     │
+                    │   (投票淘汰)     │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │    胜负判定      │
+                    └────────┬────────┘
+                       │           │
+                  游戏结束      继续游戏
+                       │           │
+                       ▼           ▼
+                ┌──────────┐  回到夜晚
+                │ GAME_OVER │
+                │ (游戏结束) │
+                └──────────┘
 ```
 
 ## 七、项目结构
@@ -252,15 +270,15 @@ WerewolfParty/
 ├── package.json                 # 根配置 (monorepo)
 ├── packages/
 │   ├── shared/                  # 共享类型定义
-│   │   ├── index.ts             # 类型、枚举、常量
+│   │   ├── index.ts             # 类型、枚举、常量、预设
 │   │   ├── package.json
 │   │   └── tsconfig.json
 │   ├── client/                  # 前端项目
 │   │   ├── src/
 │   │   │   ├── components/      # React组件
-│   │   │   │   ├── Home.tsx     # 首页
-│   │   │   │   ├── Room.tsx     # 房间页
-│   │   │   │   └── Game.tsx     # 游戏页
+│   │   │   │   ├── Home.tsx     # 首页（创建/加入房间）
+│   │   │   │   ├── Room.tsx     # 房间页（等待/配置）
+│   │   │   │   └── Game.tsx     # 游戏页（发言/投票）
 │   │   │   ├── stores/          # Zustand状态管理
 │   │   │   │   └── gameStore.ts
 │   │   │   ├── lib/
@@ -291,81 +309,54 @@ WerewolfParty/
 │       └── tsconfig.json
 ```
 
-## 八、局域网通信方案
+## 八、游戏规则实现
 
-### 8.1 房间发现
+### 8.1 角色技能
 
-```typescript
-// 服务端 UDP 广播
-const BROADCAST_PORT = 41234;
-const BROADCAST_INTERVAL = 3000; // 3秒
+| 角色 | 阵营 | 技能 | 实现要点 |
+|------|------|------|----------|
+| 狼人 | 狼人 | 击杀 | 每晚必须选择一人，多狼共同决定 |
+| 村民 | 好人 | 无 | 普通村民 |
+| 预言家 | 好人 | 查验 | 每晚可查验一人，返回是否狼人 |
+| 女巫 | 好人 | 解药/毒药 | 各限1次，不能同一晚使用，不能自救 |
+| 猎人 | 好人 | 开枪 | 死亡时可选择带走一人（被毒不能发动） |
+| 守卫 | 好人 | 守护 | 每晚守护一人，不能连续两晚同一人 |
 
-// 广播内容
-interface BroadcastMessage {
-  type: 'room_announce';
-  roomId: string;
-  hostName: string;
-  playerCount: number;
-  maxPlayers: number;
-  status: 'waiting' | 'playing';
-  port: number; // Socket.IO端口
-}
-```
+### 8.2 角色预设配置
 
-### 8.2 客户端发现
+| 预设 | 人数 | 狼人 | 特殊角色 | 村民 |
+|------|------|------|----------|------|
+| 9人标准局 | 9 | 3 | 预言家、女巫、猎人、守卫 | 1 |
+| 12人进阶局 | 12 | 4 | 预言家、女巫、猎人、守卫 | 4 |
+| 15人豪华局 | 15 | 5 | 预言家、女巫、猎人、守卫 | 6 |
 
-```typescript
-// 监听UDP广播
-// 解析广播消息
-// 显示可用房间列表
-```
+### 8.3 轮流发言机制
 
-## 九、游戏规则实现
+1. 天亮后公布死亡信息（5秒）
+2. 系统随机打乱存活玩家顺序
+3. 按顺序依次发言（口头描述）
+4. 当前发言者点击「发言完毕」后自动轮到下一位
+5. 所有人发言完毕后进入投票阶段
 
-### 9.1 角色技能
+### 8.4 胜负判定
 
-| 角色 | 技能 | 实现要点 |
-|------|------|----------|
-| 狼人 | 击杀 | 每晚必须选择一人，多狼时投票决定 |
-| 预言家 | 查验 | 每晚可查验一人，返回是否狼人 |
-| 女巫 | 解药/毒药 | 各限1次，不能同一晚使用，不能自救 |
-| 猎人 | 开枪 | 死亡时可选择带走一人（被毒不能发动） |
-| 守卫 | 守护 | 每晚守护一人，不能连续两晚同一人 |
+- 好人阵营胜利：所有狼人被淘汰
+- 狼人阵营胜利：存活狼人 ≥ 存活好人
 
-### 9.2 胜负判定
+## 九、开发规范
 
-```typescript
-function checkWinner(gameState: GameState): 'villager' | 'werewolf' | null {
-  const alivePlayers = getAlivePlayers(gameState);
-  const aliveWolves = alivePlayers.filter(p => p.role === 'werewolf');
-  const aliveVillagers = alivePlayers.filter(p => p.role !== 'werewolf');
-
-  if (aliveWolves.length === 0) return 'villager';
-  if (aliveWolves.length >= aliveVillagers.length) return 'werewolf';
-  return null;
-}
-```
-
-## 十、开发规范
-
-### 10.1 代码风格
+### 9.1 代码风格
 - 使用 TypeScript 严格模式
-- 使用 ESLint + Prettier 格式化
 - 组件使用函数式组件 + Hooks
 - 状态管理使用 Zustand
 
-### 10.2 命名规范
+### 9.2 命名规范
 - 组件：PascalCase (如 `GameBoard`)
 - 函数/变量：camelCase (如 `getPlayerRole`)
 - 常量：UPPER_SNAKE_CASE (如 `MAX_PLAYERS`)
-- 文件名：camelCase.ts 或 PascalCase.tsx
+- 文件名：PascalCase.tsx
 
-### 10.3 错误处理
-- 所有Socket事件需要错误处理
-- 用户操作需要防抖/节流
+### 9.3 错误处理
+- 所有 Socket 事件需要错误处理
 - 游戏状态需要校验
-
-### 10.4 测试策略
-- 单元测试：游戏逻辑、角色技能
-- 集成测试：房间流程、游戏流程
-- E2E测试：完整游戏流程
+- 用户操作反馈通过 `game:error` 事件推送
