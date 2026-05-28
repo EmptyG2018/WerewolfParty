@@ -68,6 +68,39 @@ export const ROLES: Record<Role, RoleInfo> = {
   }
 };
 
+// 角色预设
+export interface RolePreset {
+  id: string;
+  name: string;
+  playerCount: number;
+  roles: Role[];
+  wolfCount: number;
+}
+
+export const ROLE_PRESETS: RolePreset[] = [
+  {
+    id: 'preset-9',
+    name: '9人标准局',
+    playerCount: 9,
+    roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+    wolfCount: 3
+  },
+  {
+    id: 'preset-12',
+    name: '12人进阶局',
+    playerCount: 12,
+    roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+    wolfCount: 4
+  },
+  {
+    id: 'preset-15',
+    name: '15人豪华局',
+    playerCount: 15,
+    roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+    wolfCount: 5
+  }
+];
+
 // 游戏阶段
 export enum GamePhase {
   WAITING = 'waiting',
@@ -76,7 +109,7 @@ export enum GamePhase {
   NIGHT_WITCH = 'night_witch',
   NIGHT_GUARD = 'night_guard',
   DAY_ANNOUNCE = 'day_announce',
-  DAY_DISCUSS = 'day_discuss',
+  DAY_SPEAKING = 'day_speaking',
   DAY_VOTE = 'day_vote',
   HUNTER_SHOOT = 'hunter_shoot',
   GAME_OVER = 'game_over'
@@ -103,7 +136,6 @@ export interface RoomConfig {
   maxPlayers: number;
   roles: Role[];
   wolfCount: number;
-  discussTime: number;
   voteTime: number;
 }
 
@@ -133,14 +165,18 @@ export interface DeadPlayer {
   day: number;
 }
 
-// 聊天消息
-export interface ChatMessage {
+// 系统消息
+export interface SystemMessage {
   id: string;
-  playerId: string;
-  playerName: string;
   content: string;
   timestamp: number;
-  type: 'normal' | 'system' | 'dead';
+}
+
+// 发言状态
+export interface SpeakingState {
+  order: string[];           // 发言顺序（玩家ID列表）
+  currentIndex: number;      // 当前发言者索引
+  confirmed: string[];       // 已确认发言完毕的玩家ID
 }
 
 // 游戏状态
@@ -149,7 +185,7 @@ export interface GameState {
   day: number;
   nightActions: NightAction[];
   deadPlayers: DeadPlayer[];
-  messages: ChatMessage[];
+  systemMessages: SystemMessage[];
   phaseTimer: number;
   winner: 'villager' | 'werewolf' | null;
   votes: Record<string, string>;
@@ -158,6 +194,7 @@ export interface GameState {
   witchPoisonUsed: boolean;
   lastKilledPlayer: string | null;
   lastGuardTarget: string | null;
+  speaking: SpeakingState | null;
 }
 
 // Socket.IO 事件类型
@@ -173,7 +210,7 @@ export interface ClientToServerEvents {
   'game:witchPoison': (data: { targetId: string }) => void;
   'game:guardProtect': (data: { targetId: string }) => void;
   'game:vote': (data: { targetId: string }) => void;
-  'game:chat': (data: { message: string }) => void;
+  'game:speakingDone': () => void;
   'game:hunterShoot': (data: { targetId: string }) => void;
 }
 
@@ -185,12 +222,13 @@ export interface ServerToClientEvents {
   'room:playerJoined': (data: { player: Player }) => void;
   'room:playerLeft': (data: { playerId: string }) => void;
   'game:started': (data: { gameState: GameState; myRole: Role }) => void;
-  'game:phaseChanged': (data: { phase: GamePhase; timer: number }) => void;
+  'game:phaseChanged': (data: { phase: GamePhase; timer: number; speaking?: SpeakingState }) => void;
+  'game:speakingUpdate': (data: { speaking: SpeakingState }) => void;
   'game:playerDead': (data: { playerId: string; reason: string }) => void;
   'game:seerResult': (data: { playerId: string; isWerewolf: boolean }) => void;
   'game:voteResult': (data: { votes: Record<string, number>; eliminated: string | null }) => void;
   'game:over': (data: { winner: 'villager' | 'werewolf'; players: Player[] }) => void;
-  'game:message': (data: ChatMessage) => void;
+  'game:systemMessage': (data: SystemMessage) => void;
   'game:error': (data: { message: string }) => void;
   'game:hunterRequired': (data: { playerId: string }) => void;
 }
@@ -206,11 +244,14 @@ export interface BroadcastMessage {
   port: number;
 }
 
-// 默认房间配置
+// 默认房间配置（9人标准局）
 export const DEFAULT_ROOM_CONFIG: RoomConfig = {
-  maxPlayers: 6,
-  roles: [Role.VILLAGER, Role.WEREWOLF, Role.SEER],
-  wolfCount: 1,
-  discussTime: 120,
-  voteTime: 30
+  maxPlayers: 9,
+  roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+  wolfCount: 3,
+  voteTime: 60
 };
+
+// 最小/最大玩家数
+export const MIN_PLAYERS = 7;
+export const MAX_PLAYERS = 15;

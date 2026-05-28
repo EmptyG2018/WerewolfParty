@@ -82,8 +82,8 @@ io.on('connection', (socket) => {
     gameManager.vote(socket, data.targetId);
   });
 
-  socket.on('game:chat', (data) => {
-    gameManager.chat(socket, data.message);
+  socket.on('game:speakingDone', () => {
+    gameManager.speakingDone(socket);
   });
 
   socket.on('game:hunterShoot', (data) => {

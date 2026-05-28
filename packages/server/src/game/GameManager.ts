@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import {
-  Room, Player, Role, GamePhase, GameState,
-  ClientToServerEvents, ServerToClientEvents, ROLES
+  Room, Player, Role, GamePhase, GameState, SpeakingState,
+  ClientToServerEvents, ServerToClientEvents, ROLES, MIN_PLAYERS
 } from '@werewolf/shared';
 import { RoomManager } from '../rooms/RoomManager';
 import { generateMessageId } from '../utils';
@@ -33,8 +33,8 @@ export class GameManager {
       return;
     }
 
-    if (room.players.length < 4) {
-      socket.emit('game:error', { message: '至少需要4名玩家' });
+    if (room.players.length < MIN_PLAYERS) {
+      socket.emit('game:error', { message: `至少需要${MIN_PLAYERS}名玩家` });
       return;
     }
 
@@ -47,7 +47,7 @@ export class GameManager {
       day: 1,
       nightActions: [],
       deadPlayers: [],
-      messages: [],
+      systemMessages: [],
       phaseTimer: 0,
       winner: null,
       votes: {},
@@ -55,7 +55,8 @@ export class GameManager {
       witchSaveUsed: false,
       witchPoisonUsed: false,
       lastKilledPlayer: null,
-      lastGuardTarget: null
+      lastGuardTarget: null,
+      speaking: null
     };
 
     room.status = 'playing';
@@ -78,7 +79,6 @@ export class GameManager {
     const { roles, wolfCount } = room.config;
     const players = [...room.players];
 
-    // 确保有狼人
     const rolePool: Role[] = [];
 
     // 添加狼人
@@ -117,7 +117,6 @@ export class GameManager {
 
     this.nightActions.set(roomId, new Map());
 
-    // 根据配置的角色决定夜晚行动顺序
     const phases: GamePhase[] = [GamePhase.NIGHT_WEREWOLF];
 
     if (room.config.roles.includes(Role.SEER)) {
@@ -147,7 +146,6 @@ export class GameManager {
 
     this.io.to(roomId).emit('game:phaseChanged', { phase, timer: 0 });
 
-    // 设置超时自动跳过
     const timeout = setTimeout(() => {
       this.runNightPhases(roomId, phases, index + 1);
     }, 30000);
@@ -173,9 +171,8 @@ export class GameManager {
       nightActions.set(Role.WEREWOLF, { targetId });
     }
 
-    // 检查是否所有狼人都已行动
     const wolves = room.players.filter(p => p.role === Role.WEREWOLF && p.status === 'alive');
-    const wolvesActed = wolves.every(w => {
+    const wolvesActed = wolves.every(() => {
       const actions = this.nightActions.get(room.id);
       return actions?.has(Role.WEREWOLF);
     });
@@ -234,15 +231,6 @@ export class GameManager {
 
     player.skillUsed.witchSave = true;
     gameState.witchSaveUsed = true;
-
-    socket.emit('game:message', {
-      id: generateMessageId(),
-      playerId: 'system',
-      playerName: '系统',
-      content: '你使用了解药',
-      timestamp: Date.now(),
-      type: 'system'
-    });
 
     const timeout = this.phaseTimers.get(room.id);
     if (timeout) clearTimeout(timeout);
@@ -320,31 +308,26 @@ export class GameManager {
     let killedPlayerId: string | null = null;
     let poisonedPlayerId: string | null = null;
 
-    // 获取狼人击杀目标
     const wolfAction = nightActions.get(Role.WEREWOLF);
     if (wolfAction) {
       killedPlayerId = wolfAction.targetId;
     }
 
-    // 获取女巫毒药目标
     const witchAction = nightActions.get(Role.WITCH);
     if (witchAction) {
       poisonedPlayerId = witchAction.targetId;
     }
 
-    // 检查守卫保护
     const guardAction = nightActions.get(Role.GUARD);
     if (guardAction && guardAction.targetId === killedPlayerId) {
-      killedPlayerId = null; // 守卫保护成功
+      killedPlayerId = null;
     }
 
-    // 检查女巫解药
     if (gameState.witchSaveUsed && killedPlayerId) {
-      killedPlayerId = null; // 解药救活
+      killedPlayerId = null;
       gameState.witchSaveUsed = false;
     }
 
-    // 处理死亡
     const deadPlayers: string[] = [];
 
     if (killedPlayerId) {
@@ -375,14 +358,12 @@ export class GameManager {
 
     gameState.lastKilledPlayer = killedPlayerId;
 
-    // 检查胜负
     const winner = this.checkWinner(room);
     if (winner) {
       this.endGame(roomId, winner);
       return;
     }
 
-    // 进入白天阶段
     this.startDayPhase(roomId, deadPlayers);
   }
 
@@ -391,17 +372,13 @@ export class GameManager {
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
-    // 公布死亡信息
     gameState.phase = GamePhase.DAY_ANNOUNCE;
 
     if (deadPlayers.length === 0) {
-      this.io.to(roomId).emit('game:message', {
+      this.io.to(roomId).emit('game:systemMessage', {
         id: generateMessageId(),
-        playerId: 'system',
-        playerName: '系统',
         content: '昨晚是平安夜，没有人死亡',
-        timestamp: Date.now(),
-        type: 'system'
+        timestamp: Date.now()
       });
     } else {
       deadPlayers.forEach(playerId => {
@@ -412,10 +389,8 @@ export class GameManager {
             reason: 'killed'
           });
 
-          // 检查猎人是否需要开枪
           if (player.role === Role.HUNTER) {
             this.io.to(playerId).emit('game:hunterRequired', { playerId });
-            // 猎人死亡处理会在hunterShoot中完成
           }
         }
       });
@@ -426,31 +401,77 @@ export class GameManager {
       timer: 5
     });
 
-    // 5秒后进入讨论阶段
+    // 5秒后进入发言阶段
     setTimeout(() => {
-      this.startDiscussPhase(roomId);
+      this.startSpeakingPhase(roomId);
     }, 5000);
   }
 
-  private startDiscussPhase(roomId: string): void {
+  private startSpeakingPhase(roomId: string): void {
     const room = this.roomManager.getRoom(roomId);
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
-    gameState.phase = GamePhase.DAY_DISCUSS;
+    gameState.phase = GamePhase.DAY_SPEAKING;
     gameState.votes = {};
 
+    // 随机打乱存活玩家的发言顺序
+    const alivePlayers = room.players.filter(p => p.status === 'alive');
+    const shuffled = [...alivePlayers].sort(() => Math.random() - 0.5);
+    const speakingOrder = shuffled.map(p => p.id);
+
+    const speaking: SpeakingState = {
+      order: speakingOrder,
+      currentIndex: 0,
+      confirmed: []
+    };
+
+    gameState.speaking = speaking;
+
     this.io.to(roomId).emit('game:phaseChanged', {
-      phase: GamePhase.DAY_DISCUSS,
-      timer: room.config.discussTime
+      phase: GamePhase.DAY_SPEAKING,
+      timer: 0,
+      speaking
     });
 
-    // 讨论时间结束
-    const timeout = setTimeout(() => {
-      this.startVotePhase(roomId);
-    }, room.config.discussTime * 1000);
+    this.io.to(roomId).emit('game:speakingUpdate', { speaking });
+  }
 
-    this.phaseTimers.set(roomId, timeout);
+  speakingDone(socket: TypedSocket): void {
+    const room = this.roomManager.getRoomBySocket(socket);
+    if (!room) return;
+
+    const gameState = this.gameStates.get(room.id);
+    if (!gameState || gameState.phase !== GamePhase.DAY_SPEAKING) return;
+    if (!gameState.speaking) return;
+
+    const player = room.players.find(p => p.id === socket.id);
+    if (!player || player.status === 'dead') return;
+
+    // 只有当前发言者可以确认
+    const currentSpeakerId = gameState.speaking.order[gameState.speaking.currentIndex];
+    if (socket.id !== currentSpeakerId) {
+      socket.emit('game:error', { message: '还没轮到你发言' });
+      return;
+    }
+
+    // 标记已确认
+    if (!gameState.speaking.confirmed.includes(socket.id)) {
+      gameState.speaking.confirmed.push(socket.id);
+    }
+
+    // 移到下一位发言者
+    gameState.speaking.currentIndex++;
+
+    // 广播更新
+    this.io.to(room.id).emit('game:speakingUpdate', {
+      speaking: gameState.speaking
+    });
+
+    // 所有人都发言完毕，进入投票
+    if (gameState.speaking.currentIndex >= gameState.speaking.order.length) {
+      this.startVotePhase(room.id);
+    }
   }
 
   private startVotePhase(roomId: string): void {
@@ -460,13 +481,13 @@ export class GameManager {
 
     gameState.phase = GamePhase.DAY_VOTE;
     gameState.votes = {};
+    gameState.speaking = null;
 
     this.io.to(roomId).emit('game:phaseChanged', {
       phase: GamePhase.DAY_VOTE,
       timer: room.config.voteTime
     });
 
-    // 投票时间结束
     const timeout = setTimeout(() => {
       this.resolveVote(roomId);
     }, room.config.voteTime * 1000);
@@ -486,7 +507,6 @@ export class GameManager {
 
     gameState.votes[socket.id] = targetId;
 
-    // 检查是否所有存活玩家都已投票
     const alivePlayers = room.players.filter(p => p.status === 'alive');
     const allVoted = alivePlayers.every(p => gameState.votes[p.id]);
 
@@ -502,13 +522,11 @@ export class GameManager {
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
-    // 统计投票
     const voteCount: Record<string, number> = {};
     Object.values(gameState.votes).forEach(targetId => {
       voteCount[targetId] = (voteCount[targetId] || 0) + 1;
     });
 
-    // 找出最高票数
     let maxVotes = 0;
     let eliminatedId: string | null = null;
     let isTie = false;
@@ -523,18 +541,15 @@ export class GameManager {
       }
     });
 
-    // 平票则无人出局
     if (isTie) {
       eliminatedId = null;
     }
 
-    // 发送投票结果
     this.io.to(roomId).emit('game:voteResult', {
       votes: voteCount,
       eliminated: eliminatedId
     });
 
-    // 处理淘汰
     if (eliminatedId) {
       const player = room.players.find(p => p.id === eliminatedId);
       if (player) {
@@ -550,22 +565,19 @@ export class GameManager {
           reason: 'voted'
         });
 
-        // 检查猎人
         if (player.role === Role.HUNTER) {
           this.io.to(eliminatedId).emit('game:hunterRequired', { playerId: eliminatedId });
-          return; // 猎人死亡处理会在hunterShoot中完成
+          return;
         }
       }
     }
 
-    // 检查胜负
     const winner = this.checkWinner(room);
     if (winner) {
       this.endGame(roomId, winner);
       return;
     }
 
-    // 进入下一晚
     gameState.day++;
     setTimeout(() => {
       this.startNightPhase(roomId);
@@ -597,44 +609,18 @@ export class GameManager {
       reason: 'shot'
     });
 
-    // 检查胜负
     const winner = this.checkWinner(room);
     if (winner) {
       this.endGame(room.id, winner);
       return;
     }
 
-    // 继续游戏
     if (gameState.phase === GamePhase.DAY_ANNOUNCE || gameState.phase === GamePhase.DAY_VOTE) {
-      // 白天阶段，继续到下一晚
       gameState.day++;
       setTimeout(() => {
         this.startNightPhase(room.id);
       }, 3000);
     }
-  }
-
-  chat(socket: TypedSocket, message: string): void {
-    const room = this.roomManager.getRoomBySocket(socket);
-    if (!room) return;
-
-    const gameState = this.gameStates.get(room.id);
-    if (!gameState) return;
-
-    const player = room.players.find(p => p.id === socket.id);
-    if (!player || player.status === 'dead') return;
-
-    const chatMessage = {
-      id: generateMessageId(),
-      playerId: socket.id,
-      playerName: player.name,
-      content: message,
-      timestamp: Date.now(),
-      type: 'normal' as const
-    };
-
-    gameState.messages.push(chatMessage);
-    this.io.to(room.id).emit('game:message', chatMessage);
   }
 
   private checkWinner(room: Room): 'villager' | 'werewolf' | null {
@@ -662,7 +648,6 @@ export class GameManager {
       players: room.players
     });
 
-    // 清理定时器
     const timeout = this.phaseTimers.get(roomId);
     if (timeout) clearTimeout(timeout);
     this.phaseTimers.delete(roomId);

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Room, Player, GameState, Role, GamePhase, ChatMessage } from '@werewolf/shared';
+import { Room, Player, GameState, Role, GamePhase, SpeakingState, SystemMessage } from '@werewolf/shared';
 import { socket } from '../lib/socket';
 
 type View = 'home' | 'room' | 'game';
@@ -22,9 +22,13 @@ interface GameStore {
   gameState: GameState | null;
   setGameState: (state: GameState | null) => void;
 
-  // 聊天消息
-  messages: ChatMessage[];
-  addMessage: (message: ChatMessage) => void;
+  // 系统消息
+  systemMessages: SystemMessage[];
+  addSystemMessage: (msg: SystemMessage) => void;
+
+  // 发言状态
+  speaking: SpeakingState | null;
+  setSpeaking: (state: SpeakingState | null) => void;
 
   // 游戏结果
   seerResult: { playerId: string; isWerewolf: boolean } | null;
@@ -38,7 +42,7 @@ interface GameStore {
   initSocket: () => void;
 
   // 房间操作
-  createRoom: (playerName: string) => void;
+  createRoom: (playerName: string, config?: Partial<import('@werewolf/shared').RoomConfig>) => void;
   joinRoom: (roomId: string, playerName: string) => void;
   leaveRoom: () => void;
   startGame: () => void;
@@ -50,7 +54,7 @@ interface GameStore {
   witchPoison: (targetId: string) => void;
   guardProtect: (targetId: string) => void;
   vote: (targetId: string) => void;
-  sendChat: (message: string) => void;
+  speakingDone: () => void;
   hunterShoot: (targetId: string) => void;
 }
 
@@ -60,7 +64,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   myId: null,
   myRole: null,
   gameState: null,
-  messages: [],
+  systemMessages: [],
+  speaking: null,
   seerResult: null,
   error: null,
 
@@ -68,7 +73,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setRoom: (room) => set({ room }),
   setMyRole: (role) => set({ myRole: role }),
   setGameState: (state) => set({ gameState: state }),
-  addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
+  addSystemMessage: (msg) => set((state) => ({ systemMessages: [...state.systemMessages, msg] })),
+  setSpeaking: (speaking) => set({ speaking }),
   setSeerResult: (result) => set({ seerResult: result }),
   setError: (error) => set({ error }),
 
@@ -109,14 +115,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
         gameState,
         myRole,
         currentView: 'game',
-        messages: []
+        systemMessages: [],
+        speaking: null
       });
     });
 
-    socket.on('game:phaseChanged', ({ phase, timer }) => {
+    socket.on('game:phaseChanged', ({ phase, timer, speaking }) => {
       const gameState = get().gameState;
       if (gameState) {
-        set({ gameState: { ...gameState, phase, phaseTimer: timer } });
+        const update: Partial<GameState> = { phase, phaseTimer: timer };
+        if (speaking !== undefined) {
+          update.speaking = speaking;
+          set({ speaking });
+        }
+        set({ gameState: { ...gameState, ...update } });
+      }
+    });
+
+    socket.on('game:speakingUpdate', ({ speaking }) => {
+      set({ speaking });
+      const gameState = get().gameState;
+      if (gameState) {
+        set({ gameState: { ...gameState, speaking } });
       }
     });
 
@@ -138,12 +158,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
       set({ seerResult: { playerId, isWerewolf } });
     });
 
-    socket.on('game:message', (message) => {
-      get().addMessage(message);
+    socket.on('game:systemMessage', (message) => {
+      get().addSystemMessage(message);
     });
 
     socket.on('game:voteResult', ({ votes, eliminated }) => {
-      // 可以在这里显示投票结果
       console.log('Vote result:', votes, eliminated);
     });
 
@@ -160,13 +179,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     socket.on('game:hunterRequired', ({ playerId }) => {
-      // 猎人需要选择目标
       console.log('Hunter required:', playerId);
     });
   },
 
-  createRoom: (playerName) => {
-    socket.emit('room:create', { playerName, config: {} });
+  createRoom: (playerName, config) => {
+    socket.emit('room:create', { playerName, config: config || {} });
   },
 
   joinRoom: (roomId, playerName) => {
@@ -206,8 +224,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.emit('game:vote', { targetId });
   },
 
-  sendChat: (message) => {
-    socket.emit('game:chat', { message });
+  speakingDone: () => {
+    socket.emit('game:speakingDone');
   },
 
   hunterShoot: (targetId) => {

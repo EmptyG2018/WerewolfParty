@@ -1,22 +1,15 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
 import { GamePhase, Role, ROLES } from '@werewolf/shared';
 
 export function Game() {
   const {
-    room, myId, myRole, gameState, messages, seerResult, error,
+    room, myId, myRole, gameState, speaking, seerResult, error,
     werewolfKill, seerCheck, witchSave, witchPoison, guardProtect,
-    vote, sendChat, hunterShoot, setSeerResult
+    vote, speakingDone, hunterShoot, setSeerResult
   } = useGameStore();
 
-  const [chatInput, setChatInput] = useState('');
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'players' | 'chat'>('players');
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
 
   if (!room || !gameState || !myRole) return null;
 
@@ -33,7 +26,7 @@ export function Game() {
       [GamePhase.NIGHT_WITCH]: '魔药抉择',
       [GamePhase.NIGHT_GUARD]: '暗中守护',
       [GamePhase.DAY_ANNOUNCE]: '天亮了',
-      [GamePhase.DAY_DISCUSS]: '唇枪舌剑',
+      [GamePhase.DAY_SPEAKING]: '轮流发言',
       [GamePhase.DAY_VOTE]: '投票处决',
       [GamePhase.HUNTER_SHOOT]: '临终一击',
       [GamePhase.GAME_OVER]: '尘埃落定'
@@ -49,7 +42,7 @@ export function Game() {
       [GamePhase.NIGHT_WITCH]: '🧪',
       [GamePhase.NIGHT_GUARD]: '🛡️',
       [GamePhase.DAY_ANNOUNCE]: '☀️',
-      [GamePhase.DAY_DISCUSS]: '💬',
+      [GamePhase.DAY_SPEAKING]: '🎤',
       [GamePhase.DAY_VOTE]: '⚔️',
       [GamePhase.HUNTER_SHOOT]: '🔫',
       [GamePhase.GAME_OVER]: '🏆'
@@ -59,12 +52,6 @@ export function Game() {
 
   const getCampName = (role: Role) => {
     return ROLES[role]?.camp === 'werewolf' ? '狼人阵营' : '好人阵营';
-  };
-
-  const handleSendChat = () => {
-    if (!chatInput.trim()) return;
-    sendChat(chatInput.trim());
-    setChatInput('');
   };
 
   const handleAction = () => {
@@ -129,16 +116,12 @@ export function Game() {
     }
   };
 
-  const getTargetablePlayers = () => {
-    return room.players.filter(p => {
-      if (p.id === myId) return false;
-      if (p.status === 'dead') return false;
-      if (currentPhase === GamePhase.NIGHT_GUARD && myRole === Role.GUARD) {
-        if (myPlayer?.skillUsed.lastGuardTarget === p.id) return false;
-      }
-      return true;
-    });
-  };
+  // 发言相关
+  const isSpeakingPhase = currentPhase === GamePhase.DAY_SPEAKING;
+  const currentSpeakerId = speaking?.order[speaking?.currentIndex ?? -1];
+  const isMyTurn = currentSpeakerId === myId;
+  const hasSpoken = speaking?.confirmed.includes(myId ?? '') ?? false;
+  const speakingProgress = speaking ? `${speaking.currentIndex}/${speaking.order.length}` : '';
 
   return (
     <div className={`flex flex-col min-h-dvh relative transition-colors duration-1000 ${
@@ -161,7 +144,6 @@ export function Game() {
       <header className="safe-top px-4 pt-3 pb-2 relative z-10">
         <div className="glass rounded-2xl px-4 py-3">
           <div className="flex items-center justify-between">
-            {/* Left: Phase info */}
             <div className="flex items-center gap-2.5">
               <span className="text-xl">{getPhaseEmoji(currentPhase)}</span>
               <div>
@@ -175,7 +157,6 @@ export function Game() {
               </div>
             </div>
 
-            {/* Right: My role */}
             <div className="flex items-center gap-2">
               <div className="text-right">
                 <div className="text-[10px] text-moon-dim tracking-wider">身份</div>
@@ -195,196 +176,122 @@ export function Game() {
         </div>
       </header>
 
-      {/* Tab Switcher */}
-      <div className="px-4 py-1.5 relative z-10">
-        <div className="glass rounded-xl p-1 flex">
-          <button
-            onClick={() => setActiveTab('players')}
-            className={`flex-1 py-2 rounded-lg text-sm font-body transition-all ${
-              activeTab === 'players'
-                ? 'bg-white/[0.08] text-moon'
-                : 'text-moon-dim'
-            }`}
-          >
-            玩家 {room.players.filter(p => p.status === 'alive').length}/{room.players.length}
-          </button>
-          <button
-            onClick={() => setActiveTab('chat')}
-            className={`flex-1 py-2 rounded-lg text-sm font-body transition-all relative ${
-              activeTab === 'chat'
-                ? 'bg-white/[0.08] text-moon'
-                : 'text-moon-dim'
-            }`}
-          >
-            对话
-            {messages.length > 0 && (
-              <span className="absolute top-1 right-3 w-1.5 h-1.5 rounded-full bg-blood animate-breathe" />
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Main Content */}
-      <div className="flex-1 px-4 pb-2 relative z-10 overflow-hidden">
-        {/* Players Tab */}
-        {activeTab === 'players' && (
-          <div className="h-full overflow-y-auto space-y-2 pb-4 stagger-children">
-            {room.players.map((player) => {
-              const isDead = player.status === 'dead';
-              const isSelected = player.id === selectedTarget;
-              const isMe = player.id === myId;
-              const isTargetable = !isDead && !isMe && isAlive;
-
-              return (
-                <button
-                  key={player.id}
-                  onClick={() => isTargetable && setSelectedTarget(isSelected ? null : player.id)}
-                  disabled={!isTargetable}
-                  className={`animate-slide-up w-full flex items-center gap-3.5 p-3.5 rounded-2xl transition-all duration-200 text-left ${
-                    isDead
-                      ? 'opacity-40 bg-forest-50/30'
-                      : isSelected
-                      ? 'bg-blood/15 border border-blood/30 ring-1 ring-blood/20'
-                      : isMe
-                      ? 'glass border-blood/10'
-                      : 'glass active:scale-[0.98]'
-                  }`}
-                >
-                  {/* Avatar */}
-                  <div className="relative shrink-0">
-                    <div className={`w-11 h-11 rounded-full flex items-center justify-center text-base font-bold ${
-                      isDead
-                        ? 'bg-forest-100 text-moon-mist'
-                        : isMe
-                        ? 'bg-gradient-to-br from-blood-600 to-blood-800 text-white'
-                        : 'bg-gradient-to-br from-forest-50 to-forest-100 text-moon-dim'
-                    }`}>
-                      {player.name.charAt(0)}
-                    </div>
-                    {/* Status dot */}
-                    {!isDead && (
-                      <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-heal border-2 border-forest" />
-                    )}
-                    {isDead && (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="text-lg opacity-60">💀</span>
-                      </div>
-                    )}
-                    {/* Host crown */}
-                    {player.id === room.hostId && !isDead && (
-                      <div className="absolute -top-1.5 -right-1.5 text-[10px]">👑</div>
-                    )}
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`font-body font-medium truncate ${isDead ? 'line-through text-moon-mist' : ''}`}>
-                        {player.name}
-                      </span>
-                      {isMe && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blood/20 text-blood-400 tracking-wider shrink-0">
-                          我
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-moon-mist mt-0.5">
-                      {isDead ? '已阵亡' : isMe ? ROLES[myRole].name : '存活'}
-                    </div>
-                  </div>
-
-                  {/* Selection indicator */}
-                  {isTargetable && (
-                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
-                      isSelected
-                        ? 'border-blood bg-blood text-white'
-                        : 'border-white/20'
-                    }`}>
-                      {isSelected && (
-                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                        </svg>
-                      )}
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Chat Tab */}
-        {activeTab === 'chat' && (
-          <div className="h-full flex flex-col">
-            <div className="flex-1 overflow-y-auto space-y-3 pb-4">
-              {messages.length === 0 && (
-                <div className="flex flex-col items-center justify-center h-48 text-moon-mist">
-                  <span className="text-3xl mb-3">💬</span>
-                  <span className="text-sm">暂无消息</span>
-                </div>
-              )}
-              {messages.map((msg) => (
-                <div key={msg.id} className="animate-fade-in">
-                  {msg.type === 'system' ? (
-                    <div className="text-center py-2">
-                      <span className="inline-block px-3 py-1 rounded-full bg-white/[0.04] text-moon-mist text-xs">
-                        {msg.content}
-                      </span>
-                    </div>
-                  ) : (
-                    <div className={`flex gap-2.5 ${msg.playerId === myId ? 'flex-row-reverse' : ''}`}>
-                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
-                        msg.playerId === myId
-                          ? 'bg-blood/30 text-blood-300'
-                          : 'bg-forest-50 text-moon-dim'
-                      }`}>
-                        {msg.playerName.charAt(0)}
-                      </div>
-                      <div className={`max-w-[75%] ${msg.playerId === myId ? 'text-right' : ''}`}>
-                        <div className="text-[10px] text-moon-mist mb-1 px-1">
-                          {msg.playerName}
-                        </div>
-                        <div className={`px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed ${
-                          msg.playerId === myId
-                            ? 'bg-blood/20 text-moon rounded-br-md'
-                            : 'glass text-moon/90 rounded-bl-md'
-                        }`}>
-                          {msg.content}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
+      {/* Speaking Progress Bar */}
+      {isSpeakingPhase && speaking && (
+        <div className="px-4 py-1.5 relative z-10">
+          <div className="glass rounded-xl px-4 py-2 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-moon-dim">发言进度</span>
+              <span className="font-display text-sm text-moon">{speakingProgress}</span>
             </div>
-
-            {/* Chat input */}
-            {isAlive && (currentPhase === GamePhase.DAY_DISCUSS || currentPhase === GamePhase.DAY_VOTE) && (
-              <div className="pb-safe pt-2 pb-3">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
-                    placeholder="说点什么..."
-                    className="flex-1 px-4 py-3 bg-forest-50/50 border border-white/[0.06] rounded-2xl text-moon text-sm placeholder:text-moon-mist focus:outline-none focus:border-blood/20 transition-all"
-                  />
-                  <button
-                    onClick={handleSendChat}
-                    disabled={!chatInput.trim()}
-                    className="w-12 h-12 rounded-2xl bg-blood/20 text-blood-400 flex items-center justify-center disabled:opacity-30 active:scale-95 transition-all"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
+            {isMyTurn && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-blood/20 text-blood-400 animate-breathe">
+                轮到你了
+              </span>
+            )}
+            {hasSpoken && !isMyTurn && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-heal/20 text-heal-400">
+                已发言
+              </span>
             )}
           </div>
-        )}
+        </div>
+      )}
+
+      {/* Player List */}
+      <div className="flex-1 px-4 pb-2 relative z-10 overflow-hidden">
+        <div className="h-full overflow-y-auto space-y-2 pb-4 stagger-children">
+          {room.players.map((player) => {
+            const isDead = player.status === 'dead';
+            const isSelected = player.id === selectedTarget;
+            const isMe = player.id === myId;
+            const isTargetable = !isDead && !isMe && isAlive && canAct();
+            const isCurrentSpeaker = isSpeakingPhase && player.id === currentSpeakerId;
+            const hasPlayerSpoken = speaking?.confirmed.includes(player.id) ?? false;
+
+            return (
+              <button
+                key={player.id}
+                onClick={() => isTargetable && setSelectedTarget(isSelected ? null : player.id)}
+                disabled={!isTargetable}
+                className={`animate-slide-up w-full flex items-center gap-3.5 p-3.5 rounded-2xl transition-all duration-200 text-left ${
+                  isDead
+                    ? 'opacity-40 bg-forest-50/30'
+                    : isSelected
+                    ? 'bg-blood/15 border border-blood/30 ring-1 ring-blood/20'
+                    : isCurrentSpeaker
+                    ? 'bg-gold/10 border border-gold/30 ring-1 ring-gold/20'
+                    : isMe
+                    ? 'glass border-blood/10'
+                    : 'glass active:scale-[0.98]'
+                }`}
+              >
+                {/* Avatar */}
+                <div className="relative shrink-0">
+                  <div className={`w-11 h-11 rounded-full flex items-center justify-center text-base font-bold ${
+                    isDead
+                      ? 'bg-forest-100 text-moon-mist'
+                      : isCurrentSpeaker
+                      ? 'bg-gradient-to-br from-gold-dark to-gold text-forest'
+                      : isMe
+                      ? 'bg-gradient-to-br from-blood-600 to-blood-800 text-white'
+                      : 'bg-gradient-to-br from-forest-50 to-forest-100 text-moon-dim'
+                  }`}>
+                    {player.name.charAt(0)}
+                  </div>
+                  {!isDead && (
+                    <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-heal border-2 border-forest" />
+                  )}
+                  {isDead && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-lg opacity-60">💀</span>
+                    </div>
+                  )}
+                  {player.id === room.hostId && !isDead && (
+                    <div className="absolute -top-1.5 -right-1.5 text-[10px]">👑</div>
+                  )}
+                </div>
+
+                {/* Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`font-body font-medium truncate ${isDead ? 'line-through text-moon-mist' : ''}`}>
+                      {player.name}
+                    </span>
+                    {isMe && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blood/20 text-blood-400 tracking-wider shrink-0">
+                        我
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-moon-mist mt-0.5">
+                    {isDead ? '已阵亡' : isCurrentSpeaker ? '正在发言...' : hasPlayerSpoken ? '已发言' : isMe ? ROLES[myRole].name : '等待发言'}
+                  </div>
+                </div>
+
+                {/* Speaking indicator or selection indicator */}
+                {isCurrentSpeaker && (
+                  <div className="w-6 h-6 rounded-full bg-gold/20 flex items-center justify-center animate-breathe">
+                    <span className="text-xs">🎤</span>
+                  </div>
+                )}
+                {isTargetable && !isCurrentSpeaker && (
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                    isSelected
+                      ? 'border-blood bg-blood text-white'
+                      : 'border-white/20'
+                  }`}>
+                    {isSelected && (
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Seer Result Modal */}
@@ -413,11 +320,36 @@ export function Game() {
         </div>
       )}
 
-      {/* Bottom Action Bar */}
-      {canAct() && (
+      {/* Speaking Done Button (当前发言者) */}
+      {isSpeakingPhase && isMyTurn && isAlive && (
+        <div className="px-4 pb-safe pt-2 pb-4 relative z-20 animate-slide-in-bottom">
+          <button
+            onClick={speakingDone}
+            className="w-full py-4 rounded-2xl font-display text-lg tracking-wide text-white bg-gradient-to-r from-gold-dark via-gold to-gold-dark active:scale-[0.97] transition-transform"
+          >
+            发言完毕
+          </button>
+        </div>
+      )}
+
+      {/* Waiting for speaker */}
+      {isSpeakingPhase && !isMyTurn && isAlive && currentSpeakerId && (
+        <div className="px-4 pb-safe pt-2 pb-4 relative z-20">
+          <div className="glass-dark rounded-2xl p-4 text-center">
+            <div className="flex items-center justify-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-gold animate-breathe" />
+              <span className="text-moon-dim text-sm">
+                等待 <span className="text-moon font-medium">{room.players.find(p => p.id === currentSpeakerId)?.name}</span> 发言...
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Action Bar (夜间/投票) */}
+      {canAct() && !isSpeakingPhase && (
         <div className="px-4 pb-safe pt-2 pb-4 relative z-20 animate-slide-in-bottom">
           <div className="glass-dark rounded-2xl p-4">
-            {/* Action info */}
             <div className="flex items-center justify-between mb-3">
               <div className="text-xs text-moon-dim tracking-wider">
                 {getActionName()}目标
@@ -433,7 +365,6 @@ export function Game() {
             </div>
 
             <div className="flex gap-2">
-              {/* Witch save button */}
               {myRole === Role.WITCH && currentPhase === GamePhase.NIGHT_WITCH && (
                 <button
                   onClick={witchSave}
@@ -443,7 +374,6 @@ export function Game() {
                 </button>
               )}
 
-              {/* Main action button */}
               <button
                 onClick={handleAction}
                 disabled={!selectedTarget}
@@ -470,7 +400,6 @@ export function Game() {
       {currentPhase === GamePhase.GAME_OVER && gameState.winner && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70 backdrop-blur-md animate-fade-in">
           <div className="glass-dark rounded-3xl p-6 w-full max-w-sm animate-moonrise">
-            {/* Winner banner */}
             <div className="text-center mb-6">
               <div className="text-5xl mb-4">
                 {gameState.winner === 'villager' ? '☀️' : '🌙'}
@@ -482,7 +411,6 @@ export function Game() {
               <div className="mt-3 w-16 h-px bg-gradient-to-r from-transparent via-blood/60 to-transparent mx-auto" />
             </div>
 
-            {/* Role reveal */}
             <div className="mb-6">
               <h3 className="text-xs text-moon-dim tracking-wider uppercase mb-3 text-center">身份揭示</h3>
               <div className="space-y-2">
