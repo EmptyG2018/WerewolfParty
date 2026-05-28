@@ -1,0 +1,18 @@
+{
+  "name": "werewolf-party",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:shared\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:shared": "npm run dev -w packages/shared",
+    "dev:client": "npm run dev -w packages/client",
+    "dev:server": "npm run dev -w packages/server",
+    "build": "npm run build -w packages/shared && npm run build -w packages/server && npm run build -w packages/client",
+    "start": "npm run start -w packages/server"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}
