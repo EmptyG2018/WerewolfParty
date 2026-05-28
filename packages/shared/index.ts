@@ -91,13 +91,6 @@ export const ROLE_PRESETS: RolePreset[] = [
     playerCount: 12,
     roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
     wolfCount: 4
-  },
-  {
-    id: 'preset-15',
-    name: '15人豪华局',
-    playerCount: 15,
-    roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
-    wolfCount: 5
   }
 ];
 
@@ -254,4 +247,4 @@ export const DEFAULT_ROOM_CONFIG: RoomConfig = {
 
 // 最小/最大玩家数
 export const MIN_PLAYERS = 7;
-export const MAX_PLAYERS = 15;
+export const MAX_PLAYERS = 12;

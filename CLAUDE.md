@@ -2,15 +2,15 @@
 
 ## 一、项目概述
 
-狼人杀局域网联机游戏，支持 7-15 人游戏，无法官模式，所有玩家参与游戏。适用于露营、聚会等面对面场景，发言通过口头描述，系统提供轮流发言管理和投票功能。
+狼人杀局域网联机游戏，支持 7-12 人游戏，无法官模式，所有玩家参与游戏。适用于露营、聚会等面对面场景，发言通过口头描述，系统提供轮流发言管理和投票功能。
 
 ### 核心特性
 - 局域网联机（手动输入 IP 加入）
 - 无法官模式（游戏流程自动化）
 - 角色可配置（狼人、村民、预女猎守）
-- 角色预设（9人/12人/15人标准局）
+- 角色预设（9人/12人标准局）
 - 轮流发言机制（随机顺序，手动确认发言完毕）
-- 玩家人数：7-15 人
+- 玩家人数：7-12 人
 
 ## 二、技术栈
 
@@ -59,7 +59,7 @@ interface Room {
 }
 
 interface RoomConfig {
-  maxPlayers: number;            // 最大玩家数 (7-15)
+  maxPlayers: number;            // 最大玩家数 (7-12)
   roles: Role[];                 // 启用的角色
   wolfCount: number;             // 狼人数量
   voteTime: number;              // 投票时间 (秒)
@@ -106,7 +106,7 @@ enum Role {
 interface RolePreset {
   id: string;
   name: string;                  // "9人标准局"
-  playerCount: number;           // 9 | 12 | 15
+  playerCount: number;           // 9 | 12
   roles: Role[];                 // 启用的角色
   wolfCount: number;             // 狼人数量
 }
@@ -115,7 +115,6 @@ interface RolePreset {
 ROLE_PRESETS = [
   { id: 'preset-9',  name: '9人标准局',  playerCount: 9,  wolfCount: 3 },
   { id: 'preset-12', name: '12人进阶局', playerCount: 12, wolfCount: 4 },
-  { id: 'preset-15', name: '15人豪华局', playerCount: 15, wolfCount: 5 },
 ]
 ```
 
@@ -328,7 +327,6 @@ WerewolfParty/
 |------|------|------|----------|------|
 | 9人标准局 | 9 | 3 | 预言家、女巫、猎人、守卫 | 1 |
 | 12人进阶局 | 12 | 4 | 预言家、女巫、猎人、守卫 | 4 |
-| 15人豪华局 | 15 | 5 | 预言家、女巫、猎人、守卫 | 6 |
 
 ### 8.3 轮流发言机制
 
@@ -367,7 +365,7 @@ WerewolfParty/
 
 ### [2026-05-28] 补充选择配置角色功能
 - **类型**: 新增
-- **内容**: 房主可以选择并应用角色预设配置（9人/12人/15人），支持自定义调整角色组合
+- **内容**: 房主可以选择并应用角色预设配置（9人/12人），支持自定义调整角色组合
 - **影响范围**: Room.tsx（UI交互）、gameStore.ts（updateConfig action）、RoomManager.ts（服务端配置更新）
 
 ### [2026-05-28] 独立配置页面与创建流程优化
@@ -383,3 +381,8 @@ WerewolfParty/
   1. 支持房主自由组合角色（狼人数量、特殊角色开关）
   2. 角色组合需符合游戏规则：特殊角色（预言家/女巫/猎人/守卫）最多各1个，狼人数量可调，村民自动填充剩余位置
 - **影响范围**: CreateRoom.tsx（自定义配置 UI 与校验逻辑）、shared/index.ts（校验规则常量）
+
+### [2026-05-28] 移除15人局预设
+- **类型**: 移除
+- **内容**: 移除15人豪华局预设，游戏人数上限调整为12人
+- **影响范围**: shared/index.ts（ROLE_PRESETS、MAX_PLAYERS）、CreateRoom.tsx（预设列表）
