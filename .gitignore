@@ -43,4 +43,5 @@ coverage/
 # Misc
 *.tgz
 .cache
-.claude/
+.claude/settings.local.json
+.claude/projects/
