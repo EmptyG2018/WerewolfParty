@@ -1,12 +1,20 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useGameStore } from '../stores/gameStore';
 import { Role, ROLES, ROLE_PRESETS, MIN_PLAYERS, MAX_PLAYERS, RolePreset } from '@werewolf/shared';
 
 export function Room() {
-  const { room, myId, startGame, leaveRoom, error } = useGameStore();
+  const { room, myId, startGame, leaveRoom, updateConfig, error } = useGameStore();
   const [copied, setCopied] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!room) return;
+    const matched = ROLE_PRESETS.find(
+      p => p.playerCount === room.config.maxPlayers && p.wolfCount === room.config.wolfCount
+    );
+    setSelectedPreset(matched?.id ?? null);
+  }, [room?.config.maxPlayers, room?.config.wolfCount]);
 
   if (!room) return null;
 
@@ -25,9 +33,11 @@ export function Room() {
 
   const applyPreset = (preset: RolePreset) => {
     setSelectedPreset(preset.id);
-    // 通过socket更新配置
-    // 这里需要调用 room:updateConfig
-    // 但由于当前store没有暴露updateConfig，我们暂时只在UI上显示
+    updateConfig({
+      maxPlayers: preset.playerCount,
+      roles: preset.roles,
+      wolfCount: preset.wolfCount,
+    });
   };
 
   return (

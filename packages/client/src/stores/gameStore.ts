@@ -47,6 +47,9 @@ interface GameStore {
   leaveRoom: () => void;
   startGame: () => void;
 
+  // 房间配置
+  updateConfig: (config: Partial<import('@werewolf/shared').RoomConfig>) => void;
+
   // 游戏操作
   werewolfKill: (targetId: string) => void;
   seerCheck: (targetId: string) => void;
@@ -198,6 +201,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   startGame: () => {
     socket.emit('room:start');
+  },
+
+  updateConfig: (config) => {
+    socket.emit('room:updateConfig', config);
   },
 
   werewolfKill: (targetId) => {
