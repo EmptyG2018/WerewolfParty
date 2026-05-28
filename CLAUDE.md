@@ -369,3 +369,10 @@ WerewolfParty/
 - **类型**: 新增
 - **内容**: 房主可以选择并应用角色预设配置（9人/12人/15人），支持自定义调整角色组合
 - **影响范围**: Room.tsx（UI交互）、gameStore.ts（updateConfig action）、RoomManager.ts（服务端配置更新）
+
+### [2026-05-28] 独立配置页面与创建流程优化
+- **类型**: 变更
+- **内容**: 
+  1. 新增独立的角色配置页面，房主在创建房间前完成角色组合配置
+  2. 优化创建流程：房主必须先配置角色，确认后再创建房间
+- **影响范围**: 新增 CreateRoom.tsx、Home.tsx（导航变更）、Room.tsx（移除配置面板）、gameStore.ts（新增 create view）、App.tsx（路由）

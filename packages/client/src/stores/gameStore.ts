@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { Room, Player, GameState, Role, GamePhase, SpeakingState, SystemMessage } from '@werewolf/shared';
 import { socket } from '../lib/socket';
 
-type View = 'home' | 'room' | 'game';
+type View = 'home' | 'create' | 'room' | 'game';
 
 interface GameStore {
   // 视图状态
@@ -12,6 +12,10 @@ interface GameStore {
   // 房间状态
   room: Room | null;
   setRoom: (room: Room | null) => void;
+
+  // 待创建房间的玩家名
+  pendingName: string | null;
+  setPendingName: (name: string | null) => void;
 
   // 玩家信息
   myId: string | null;
@@ -64,6 +68,7 @@ interface GameStore {
 export const useGameStore = create<GameStore>((set, get) => ({
   currentView: 'home',
   room: null,
+  pendingName: null,
   myId: null,
   myRole: null,
   gameState: null,
@@ -73,6 +78,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   error: null,
 
   setCurrentView: (view) => set({ currentView: view }),
+  setPendingName: (name) => set({ pendingName: name }),
   setRoom: (room) => set({ room }),
   setMyRole: (role) => set({ myRole: role }),
   setGameState: (state) => set({ gameState: state }),

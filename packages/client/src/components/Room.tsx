@@ -1,20 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { Role, ROLES, ROLE_PRESETS, MIN_PLAYERS, MAX_PLAYERS, RolePreset } from '@werewolf/shared';
+import { Role, ROLES, MIN_PLAYERS } from '@werewolf/shared';
 
 export function Room() {
-  const { room, myId, startGame, leaveRoom, updateConfig, error } = useGameStore();
+  const { room, myId, startGame, leaveRoom, error } = useGameStore();
   const [copied, setCopied] = useState(false);
-  const [showConfig, setShowConfig] = useState(false);
-  const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!room) return;
-    const matched = ROLE_PRESETS.find(
-      p => p.playerCount === room.config.maxPlayers && p.wolfCount === room.config.wolfCount
-    );
-    setSelectedPreset(matched?.id ?? null);
-  }, [room?.config.maxPlayers, room?.config.wolfCount]);
 
   if (!room) return null;
 
@@ -29,15 +19,6 @@ export function Room() {
 
   const getRoleName = (role: Role) => {
     return ROLES[role]?.name || role;
-  };
-
-  const applyPreset = (preset: RolePreset) => {
-    setSelectedPreset(preset.id);
-    updateConfig({
-      maxPlayers: preset.playerCount,
-      roles: preset.roles,
-      wolfCount: preset.wolfCount,
-    });
   };
 
   return (
@@ -153,96 +134,32 @@ export function Room() {
         </div>
       </div>
 
-      {/* Config Panel (Host only) */}
-      {isHost && (
-        <div className="px-5 py-2">
-          <button
-            onClick={() => setShowConfig(!showConfig)}
-            className="w-full glass rounded-2xl p-4 flex items-center justify-between"
-          >
-            <h3 className="text-xs text-moon-dim tracking-wider uppercase">游戏配置</h3>
-            <svg className={`w-4 h-4 text-moon-dim transition-transform ${showConfig ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-
-          {showConfig && (
-            <div className="mt-2 glass rounded-2xl p-4 animate-slide-up">
-              {/* Preset buttons */}
-              <div className="mb-4">
-                <p className="text-xs text-moon-dim tracking-wider mb-2">快速预设</p>
-                <div className="grid grid-cols-3 gap-2">
-                  {ROLE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      onClick={() => applyPreset(preset)}
-                      className={`p-3 rounded-xl text-center transition-all ${
-                        selectedPreset === preset.id
-                          ? 'bg-blood/20 border border-blood/30'
-                          : 'bg-forest-50/50 hover:bg-forest-50'
-                      }`}
-                    >
-                      <div className="font-display text-lg text-moon">{preset.playerCount}人</div>
-                      <div className="text-[10px] text-moon-mist mt-0.5">{preset.wolfCount}狼</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Current config display */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-forest-50/50 rounded-xl p-3">
-                  <div className="text-moon-mist text-[10px] tracking-wider mb-1">狼人</div>
-                  <div className="font-display text-xl text-blood-400">{room.config.wolfCount} 人</div>
-                </div>
-                <div className="bg-forest-50/50 rounded-xl p-3">
-                  <div className="text-moon-mist text-[10px] tracking-wider mb-1">投票时间</div>
-                  <div className="font-display text-xl text-moon">{room.config.voteTime}s</div>
-                </div>
-                <div className="col-span-2 bg-forest-50/50 rounded-xl p-3">
-                  <div className="text-moon-mist text-[10px] tracking-wider mb-1">启用角色</div>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {room.config.roles.map(role => (
-                      <span key={role} className="text-xs px-1.5 py-0.5 rounded bg-white/[0.05] text-moon-dim">
-                        {getRoleName(role)}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
+      {/* Config display */}
+      <div className="px-5 py-2">
+        <div className="glass rounded-2xl p-4">
+          <h3 className="text-xs text-moon-dim tracking-wider uppercase mb-3">游戏配置</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-forest-50/50 rounded-xl p-3">
+              <div className="text-moon-mist text-[10px] tracking-wider mb-1">狼人</div>
+              <div className="font-display text-xl text-blood-400">{room.config.wolfCount} 人</div>
             </div>
-          )}
-        </div>
-      )}
-
-      {/* Config display (Non-host) */}
-      {!isHost && (
-        <div className="px-5 py-2">
-          <div className="glass rounded-2xl p-4">
-            <h3 className="text-xs text-moon-dim tracking-wider uppercase mb-3">游戏配置</h3>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-forest-50/50 rounded-xl p-3">
-                <div className="text-moon-mist text-[10px] tracking-wider mb-1">狼人</div>
-                <div className="font-display text-xl text-blood-400">{room.config.wolfCount} 人</div>
-              </div>
-              <div className="bg-forest-50/50 rounded-xl p-3">
-                <div className="text-moon-mist text-[10px] tracking-wider mb-1">投票时间</div>
-                <div className="font-display text-xl text-moon">{room.config.voteTime}s</div>
-              </div>
-              <div className="col-span-2 bg-forest-50/50 rounded-xl p-3">
-                <div className="text-moon-mist text-[10px] tracking-wider mb-1">启用角色</div>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {room.config.roles.map(role => (
-                    <span key={role} className="text-xs px-1.5 py-0.5 rounded bg-white/[0.05] text-moon-dim">
-                      {getRoleName(role)}
-                    </span>
-                  ))}
-                </div>
+            <div className="bg-forest-50/50 rounded-xl p-3">
+              <div className="text-moon-mist text-[10px] tracking-wider mb-1">投票时间</div>
+              <div className="font-display text-xl text-moon">{room.config.voteTime}s</div>
+            </div>
+            <div className="col-span-2 bg-forest-50/50 rounded-xl p-3">
+              <div className="text-moon-mist text-[10px] tracking-wider mb-1">启用角色</div>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {room.config.roles.map(role => (
+                  <span key={role} className="text-xs px-1.5 py-0.5 rounded bg-white/[0.05] text-moon-dim">
+                    {getRoleName(role)}
+                  </span>
+                ))}
               </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Error */}
       {error && (

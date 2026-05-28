@@ -6,7 +6,7 @@ export function Home() {
   const [roomId, setRoomId] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const { createRoom, joinRoom, error, initSocket } = useGameStore();
+  const { joinRoom, setCurrentView, setPendingName, error, initSocket } = useGameStore();
 
   useEffect(() => {
     initSocket();
@@ -15,7 +15,8 @@ export function Home() {
 
   const handleCreateRoom = () => {
     if (!playerName.trim()) return;
-    createRoom(playerName.trim());
+    setPendingName(playerName.trim());
+    setCurrentView('create');
   };
 
   const handleJoinRoom = () => {
