@@ -4,11 +4,13 @@ import { Role, ROLES, ROLE_PRESETS, RoomConfig, DEFAULT_ROOM_CONFIG, MIN_PLAYERS
 
 const WOLF_ROLES = [Role.WOLF_KING];
 const VILLAGER_ROLES = [Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD];
+const HYBRIDABLE_ROLES = [Role.HUNTER, Role.GUARD]; // 可神民同体的角色
 
 interface CustomConfig {
   maxPlayers: number;
   wolfCount: number;
   enabledRoles: Set<Role>;
+  hybridRoles: Set<Role>;
 }
 
 export function CreateRoom() {
@@ -20,6 +22,7 @@ export function CreateRoom() {
     maxPlayers: 9,
     wolfCount: 3,
     enabledRoles: new Set(VILLAGER_ROLES),
+    hybridRoles: new Set<Role>(),
   });
 
   // --- Validation ---
@@ -53,6 +56,7 @@ export function CreateRoom() {
         roles: preset.roles,
         wolfCount: preset.wolfCount,
         voteTime: DEFAULT_ROOM_CONFIG.voteTime,
+        hybridRoles: preset.hybridRoles,
       };
     }
     const roles: Role[] = [Role.WEREWOLF, ...custom.enabledRoles];
@@ -61,6 +65,7 @@ export function CreateRoom() {
       roles,
       wolfCount: custom.wolfCount,
       voteTime: DEFAULT_ROOM_CONFIG.voteTime,
+      hybridRoles: [...custom.hybridRoles],
     };
   };
 
@@ -69,7 +74,10 @@ export function CreateRoom() {
         const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!;
         return p.playerCount - p.wolfCount - p.roles.filter(r => r !== Role.WEREWOLF && r !== Role.WOLF_KING).length;
       })()
-    : custom.maxPlayers - custom.wolfCount - custom.enabledRoles.size;
+    : (() => {
+        const nonHybridCount = [...custom.enabledRoles].filter(r => !custom.hybridRoles.has(r)).length;
+        return custom.maxPlayers - custom.wolfCount - nonHybridCount;
+      })();
 
   // --- Handlers ---
   const handleBack = () => {
@@ -85,9 +93,23 @@ export function CreateRoom() {
   const toggleRole = (role: Role) => {
     setCustom(prev => {
       const next = new Set(prev.enabledRoles);
+      const nextHybrid = new Set(prev.hybridRoles);
+      if (next.has(role)) {
+        next.delete(role);
+        nextHybrid.delete(role); // 禁用角色时同时关闭神民同体
+      } else {
+        next.add(role);
+      }
+      return { ...prev, enabledRoles: next, hybridRoles: nextHybrid };
+    });
+  };
+
+  const toggleHybrid = (role: Role) => {
+    setCustom(prev => {
+      const next = new Set(prev.hybridRoles);
       if (next.has(role)) next.delete(role);
       else next.add(role);
-      return { ...prev, enabledRoles: next };
+      return { ...prev, hybridRoles: next };
     });
   };
 
@@ -326,20 +348,22 @@ export function CreateRoom() {
               <div className="grid grid-cols-2 gap-2.5">
                 {VILLAGER_ROLES.map(role => {
                   const enabled = custom.enabledRoles.has(role);
+                  const canHybrid = HYBRIDABLE_ROLES.includes(role);
+                  const isHybrid = custom.hybridRoles.has(role);
                   return (
-                    <button
-                      key={role}
-                      onClick={() => toggleRole(role)}
-                      className={`flex items-center gap-3 p-4 rounded-2xl transition-all duration-200 ${
-                        enabled
-                          ? 'bg-heal/10 border border-heal/30 ring-1 ring-heal/10'
-                          : 'glass hover:bg-white/[0.06]'
-                      }`}
-                    >
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${
-                        enabled ? 'bg-heal/20' : 'bg-forest-50/50'
-                      }`}>
-                        {getRoleEmoji(role)}
+                    <div key={role} className="relative">
+                      <button
+                        onClick={() => toggleRole(role)}
+                        className={`w-full flex items-center gap-3 p-4 rounded-2xl transition-all duration-200 ${
+                          enabled
+                            ? 'bg-heal/10 border border-heal/30 ring-1 ring-heal/10'
+                            : 'glass hover:bg-white/[0.06]'
+                        }`}
+                      >
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${
+                          enabled ? 'bg-heal/20' : 'bg-forest-50/50'
+                        }`}>
+                          {getRoleEmoji(role)}
                       </div>
                       <div className="text-left">
                         <div className={`text-sm font-body ${enabled ? 'text-heal-400' : 'text-moon-dim'}`}>
@@ -358,7 +382,21 @@ export function CreateRoom() {
                           </svg>
                         )}
                       </div>
-                    </button>
+                      </button>
+                      {/* 神民同体开关 */}
+                      {enabled && canHybrid && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleHybrid(role); }}
+                          className={`absolute -top-1.5 -right-1.5 px-1.5 py-0.5 rounded-md text-[9px] tracking-wider transition-all ${
+                            isHybrid
+                              ? 'bg-gold/20 text-gold border border-gold/30'
+                              : 'bg-forest-50/80 text-moon-mist border border-white/[0.06]'
+                          }`}
+                        >
+                          神民
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>

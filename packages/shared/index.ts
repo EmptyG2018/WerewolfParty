@@ -84,6 +84,7 @@ export interface RolePreset {
   playerCount: number;
   roles: Role[];
   wolfCount: number;
+  hybridRoles: Role[];
 }
 
 export const ROLE_PRESETS: RolePreset[] = [
@@ -92,14 +93,16 @@ export const ROLE_PRESETS: RolePreset[] = [
     name: '9人标准局',
     playerCount: 9,
     roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER],
-    wolfCount: 3
+    wolfCount: 3,
+    hybridRoles: []
   },
   {
     id: 'preset-12',
     name: '12人进阶局',
     playerCount: 12,
     roles: [Role.WEREWOLF, Role.WOLF_KING, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
-    wolfCount: 3
+    wolfCount: 3,
+    hybridRoles: []
   }
 ];
 
@@ -140,6 +143,7 @@ export interface RoomConfig {
   roles: Role[];
   wolfCount: number;
   voteTime: number;
+  hybridRoles: Role[];  // 神民同体角色（不额外占位，等同于村民位）
 }
 
 // 房间
@@ -253,9 +257,10 @@ export interface BroadcastMessage {
 // 默认房间配置（9人标准局）
 export const DEFAULT_ROOM_CONFIG: RoomConfig = {
   maxPlayers: 9,
-  roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+  roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER],
   wolfCount: 3,
-  voteTime: 60
+  voteTime: 60,
+  hybridRoles: []
 };
 
 // 最小/最大玩家数

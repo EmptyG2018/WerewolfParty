@@ -77,8 +77,9 @@ export class GameManager {
   }
 
   private assignRoles(room: Room): void {
-    const { roles, wolfCount } = room.config;
+    const { roles, wolfCount, hybridRoles } = room.config;
     const players = [...room.players];
+    const hybridSet = new Set(hybridRoles || []);
 
     const rolePool: Role[] = [];
 
@@ -87,16 +88,31 @@ export class GameManager {
       rolePool.push(Role.WEREWOLF);
     }
 
-    // 添加其他角色
+    // 添加非狼人角色（神民同体角色不额外占位，用村民位替换）
+    const normalRoles: Role[] = [];
+    const hybridRoleList: Role[] = [];
     roles.forEach(role => {
-      if (role !== Role.WEREWOLF) {
-        rolePool.push(role);
+      if (role === Role.WEREWOLF) return;
+      if (hybridSet.has(role)) {
+        hybridRoleList.push(role);
+      } else {
+        normalRoles.push(role);
       }
     });
+
+    normalRoles.forEach(role => rolePool.push(role));
 
     // 填充村民
     while (rolePool.length < players.length) {
       rolePool.push(Role.VILLAGER);
+    }
+
+    // 神民同体角色替换村民位（不增加总数）
+    for (let i = 0; i < hybridRoleList.length; i++) {
+      const villagerIdx = rolePool.indexOf(Role.VILLAGER);
+      if (villagerIdx !== -1) {
+        rolePool[villagerIdx] = hybridRoleList[i];
+      }
     }
 
     // 打乱角色池
