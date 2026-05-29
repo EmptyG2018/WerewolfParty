@@ -77,9 +77,8 @@ export class GameManager {
   }
 
   private assignRoles(room: Room): void {
-    const { roles, wolfCount, hybridRoles } = room.config;
+    const { roles, wolfCount } = room.config;
     const players = [...room.players];
-    const hybridSet = new Set(hybridRoles || []);
 
     const rolePool: Role[] = [];
 
@@ -88,31 +87,16 @@ export class GameManager {
       rolePool.push(Role.WEREWOLF);
     }
 
-    // 添加非狼人角色（神民同体角色不额外占位，用村民位替换）
-    const normalRoles: Role[] = [];
-    const hybridRoleList: Role[] = [];
+    // 添加其他角色
     roles.forEach(role => {
-      if (role === Role.WEREWOLF) return;
-      if (hybridSet.has(role)) {
-        hybridRoleList.push(role);
-      } else {
-        normalRoles.push(role);
+      if (role !== Role.WEREWOLF) {
+        rolePool.push(role);
       }
     });
-
-    normalRoles.forEach(role => rolePool.push(role));
 
     // 填充村民
     while (rolePool.length < players.length) {
       rolePool.push(Role.VILLAGER);
-    }
-
-    // 神民同体角色替换村民位（不增加总数）
-    for (let i = 0; i < hybridRoleList.length; i++) {
-      const villagerIdx = rolePool.indexOf(Role.VILLAGER);
-      if (villagerIdx !== -1) {
-        rolePool[villagerIdx] = hybridRoleList[i];
-      }
     }
 
     // 打乱角色池
@@ -702,12 +686,26 @@ export class GameManager {
   }
 
   private checkWinner(room: Room): 'villager' | 'werewolf' | null {
+    const hybridSet = new Set(room.config.hybridRoles || []);
     const alivePlayers = room.players.filter(p => p.status === 'alive');
-    const aliveWolves = alivePlayers.filter(p => p.role === Role.WEREWOLF || p.role === Role.WOLF_KING);
-    const aliveVillagers = alivePlayers.filter(p => p.role !== Role.WEREWOLF && p.role !== Role.WOLF_KING);
 
+    const aliveWolves = alivePlayers.filter(p => p.role === Role.WEREWOLF || p.role === Role.WOLF_KING);
     if (aliveWolves.length === 0) return 'villager';
-    if (aliveWolves.length >= aliveVillagers.length) return 'werewolf';
+
+    const isGod = (p: Player) => p.role !== Role.WEREWOLF && p.role !== Role.WOLF_KING && p.role !== Role.VILLAGER;
+    const isVillager = (p: Player) => p.role === Role.VILLAGER;
+    const isHybrid = (p: Player) => p.role !== null && hybridSet.has(p.role);
+
+    // 神职存活数（含神民同体）
+    const aliveGods = alivePlayers.filter(p => isGod(p) || isHybrid(p));
+    // 平民存活数（纯平民 + 神民同体）
+    const aliveVillagers = alivePlayers.filter(p => isVillager(p) || isHybrid(p));
+
+    // 屠神：所有神职出局
+    if (aliveGods.length === 0) return 'werewolf';
+    // 屠民：所有平民出局（神民同体同时计入平民）
+    if (aliveVillagers.length === 0) return 'werewolf';
+
     return null;
   }
 

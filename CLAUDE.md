@@ -388,10 +388,13 @@ WerewolfParty/
 - **内容**: 移除15人豪华局预设，游戏人数上限调整为12人
 - **影响范围**: shared/index.ts（ROLE_PRESETS、MAX_PLAYERS）、CreateRoom.tsx（预设列表）
 
-### [2026-05-29] 神民同体配置
+### [2026-05-29] 神民同体与屠边规则
 - **类型**: 新增
-- **内容**: 支持猎人、守卫配置为神民同体（特殊角色不额外占位，等同于村民位），用于人数不足时保持游戏平衡
-- **影响范围**: shared/index.ts（RoomConfig.hybridRoles）、GameManager.ts（assignRoles 逻辑）、CreateRoom.tsx（神民同体开关 UI）
+- **内容**:
+  1. 新增屠边胜负判定：狼人阵营可屠神（所有神职出局）或屠民（所有平民出局）获胜
+  2. 支持配置神民同体角色（猎人、守卫），死亡时同时计入神职死亡数和平民死亡数
+  3. 神民同体影响屠边判定平衡，使狼人更难达成屠边
+- **影响范围**: shared/index.ts（RoomConfig.hybridRoles）、GameManager.ts（checkWinner 屠边逻辑）、CreateRoom.tsx（神民同体配置 UI）
 
 ### [2026-05-29] 新增狼王角色与预设调整
 - **类型**: 新增

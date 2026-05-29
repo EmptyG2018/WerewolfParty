@@ -74,10 +74,7 @@ export function CreateRoom() {
         const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!;
         return p.playerCount - p.wolfCount - p.roles.filter(r => r !== Role.WEREWOLF && r !== Role.WOLF_KING).length;
       })()
-    : (() => {
-        const nonHybridCount = [...custom.enabledRoles].filter(r => !custom.hybridRoles.has(r)).length;
-        return custom.maxPlayers - custom.wolfCount - nonHybridCount;
-      })();
+    : custom.maxPlayers - custom.wolfCount - custom.enabledRoles.size;
 
   // --- Handlers ---
   const handleBack = () => {
