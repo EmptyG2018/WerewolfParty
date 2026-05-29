@@ -1,15 +1,28 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useGameStore } from '../stores/gameStore';
 import { GamePhase, Role, ROLES } from '@werewolf/shared';
 
 export function Game() {
   const {
     room, myId, myRole, gameState, speaking, seerResult, error,
-    confirmRole, werewolfKill, seerCheck, witchSave, witchPoison, guardProtect,
+    roleConfirmed, confirmedPlayers, wolfVotes, wolfSelections,
+    confirmRole, werewolfKill, wolfConfirmVote, seerCheck, witchSave, witchPoison, guardProtect,
     vote, speakingDone, hunterShoot, wolfKingShoot, setSeerResult
   } = useGameStore();
 
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
+
+  // Client-side countdown for phase timer
+  useEffect(() => {
+    if (!gameState || gameState.phaseTimer <= 0) return;
+    const interval = setInterval(() => {
+      useGameStore.setState((state) => {
+        if (!state.gameState || state.gameState.phaseTimer <= 0) return state;
+        return { gameState: { ...state.gameState, phaseTimer: state.gameState.phaseTimer - 1 } };
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [gameState?.phase, gameState?.phaseTimer]);
 
   if (!room || !gameState || !myRole) return null;
 
@@ -54,12 +67,25 @@ export function Game() {
     return emojis[phase] || '🌙';
   };
 
+  // 狼人是否已确认投票
+  const myWolfVote = myId ? wolfVotes[myId] : undefined;
+  const myWolfSelection = myId ? wolfSelections[myId] : undefined;
+  const hasConfirmedWolfVote = !!myWolfVote;
+
   const handleAction = () => {
     if (!selectedTarget) return;
     switch (currentPhase) {
       case GamePhase.NIGHT_WEREWOLF:
-        if (myRole === Role.WEREWOLF || myRole === Role.WOLF_KING) werewolfKill(selectedTarget);
-        break;
+        if (myRole === Role.WEREWOLF || myRole === Role.WOLF_KING) {
+          if (myWolfSelection === selectedTarget) {
+            // 已选择此目标，确认投票
+            wolfConfirmVote();
+          } else {
+            // 新选择
+            werewolfKill(selectedTarget);
+          }
+        }
+        return;
       case GamePhase.NIGHT_SEER:
         if (myRole === Role.SEER) seerCheck(selectedTarget);
         break;
@@ -98,7 +124,7 @@ export function Game() {
 
   const getActionName = () => {
     switch (currentPhase) {
-      case GamePhase.NIGHT_WEREWOLF: return '击杀';
+      case GamePhase.NIGHT_WEREWOLF: return '投票击杀';
       case GamePhase.NIGHT_SEER: return '查验';
       case GamePhase.NIGHT_WITCH: return '毒杀';
       case GamePhase.NIGHT_GUARD: return '守护';
@@ -128,6 +154,10 @@ export function Game() {
   const isMyTurn = currentSpeakerId === myId;
   const hasSpoken = speaking?.confirmed.includes(myId ?? '') ?? false;
   const speakingProgress = speaking ? `${speaking.currentIndex}/${speaking.order.length}` : '';
+
+  // 狼人投票相关
+  const isWolf = myRole === Role.WEREWOLF || myRole === Role.WOLF_KING;
+  const isWolfPhase = currentPhase === GamePhase.NIGHT_WEREWOLF;
 
   return (
     <div className={`flex flex-col min-h-dvh relative transition-colors duration-1000 ${
@@ -185,15 +215,38 @@ export function Game() {
                 </div>
               </div>
 
-              {/* Confirm button */}
-              <button
-                onClick={confirmRole}
-                className="w-full py-3.5 rounded-xl font-display text-base text-white
-                  bg-gradient-to-r from-heal-dark to-heal active:scale-[0.97]
-                  transition-transform shadow-lg shadow-heal/20"
-              >
-                确认身份
-              </button>
+              {/* Confirm status / button */}
+              {roleConfirmed ? (
+                <div className="space-y-1">
+                  <div className="text-heal-400 font-display text-sm">已确认</div>
+                  <div className="text-[10px] text-moon-dim">
+                    {confirmedPlayers.length}/{room.players.length} 人已确认
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={confirmRole}
+                  className="w-full py-3.5 rounded-xl font-display text-base text-white
+                    bg-gradient-to-r from-heal-dark to-heal active:scale-[0.97]
+                    transition-transform shadow-lg shadow-heal/20"
+                >
+                  确认身份
+                </button>
+              )}
+
+              {/* Countdown timer */}
+              <div className="space-y-2">
+                <div className="text-[10px] text-moon-dim tracking-widest">自动进入夜晚</div>
+                <div className="font-display text-4xl text-blood-400 animate-breathe">
+                  {gameState.phaseTimer}
+                </div>
+                <div className="w-full h-1 rounded-full bg-forest-100 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-blood-600 to-blood transition-all duration-1000"
+                    style={{ width: `${(gameState.phaseTimer / (room.config.roleConfirmTime || 30)) * 100}%` }}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -257,99 +310,144 @@ export function Game() {
         </div>
       )}
 
-      {/* Player List */}
+      {/* Player Grid — 2列横向布局，与等待大厅一致 */}
       <div className="flex-1 px-4 pb-2 relative z-10 overflow-hidden">
-        <div className="h-full overflow-y-auto space-y-2 pb-4 stagger-children">
-          {room.players.map((player) => {
-            const isDead = player.status === 'dead';
-            const isSelected = player.id === selectedTarget;
-            const isMe = player.id === myId;
-            const isTargetable = !isDead && !isMe && isAlive && canAct();
-            const isCurrentSpeaker = isSpeakingPhase && player.id === currentSpeakerId;
-            const hasPlayerSpoken = speaking?.confirmed.includes(player.id) ?? false;
+        <div className="h-full overflow-y-auto pb-4">
+          <div className="grid grid-cols-2 gap-2 stagger-children">
+            {room.players.map((player) => {
+              const isDead = player.status === 'dead';
+              const isSelected = player.id === selectedTarget;
+              const isMe = player.id === myId;
+              const isTargetable = !isDead && !isMe && isAlive && canAct();
+              const isCurrentSpeaker = isSpeakingPhase && player.id === currentSpeakerId;
+              const hasPlayerSpoken = speaking?.confirmed.includes(player.id) ?? false;
 
-            return (
-              <button
-                key={player.id}
-                onClick={() => isTargetable && setSelectedTarget(isSelected ? null : player.id)}
-                disabled={!isTargetable}
-                className={`animate-slide-up w-full flex items-center gap-3.5 p-3.5 rounded-2xl transition-all duration-200 text-left ${
-                  isDead
-                    ? 'opacity-40 bg-forest-50/30'
-                    : isSelected
-                    ? 'bg-blood/15 border border-blood/30 ring-1 ring-blood/20'
-                    : isCurrentSpeaker
-                    ? 'bg-gold/10 border border-gold/30 ring-1 ring-gold/20'
-                    : isMe
-                    ? 'glass border-blood/10'
-                    : 'glass active:scale-[0.98]'
-                }`}
-              >
-                {/* Avatar */}
-                <div className="relative shrink-0">
-                  <div className={`w-11 h-11 rounded-full flex items-center justify-center text-base font-bold ${
+              // 狼人投票：显示已确认投票数
+              const wolfVotesOnThis = isWolf && isWolfPhase
+                ? Object.entries(wolfVotes).filter(([, tid]) => tid === player.id).length
+                : 0;
+
+              return (
+                <button
+                  key={player.id}
+                  onClick={() => isTargetable && setSelectedTarget(isSelected ? null : player.id)}
+                  disabled={!isTargetable}
+                  className={`animate-slide-up relative flex items-center gap-3 p-3 rounded-xl transition-all duration-200 text-left ${
                     isDead
-                      ? 'bg-forest-100 text-moon-mist'
+                      ? 'opacity-40 bg-forest-50/30'
+                      : isSelected
+                      ? 'bg-blood/15 border border-blood/30 ring-1 ring-blood/20'
                       : isCurrentSpeaker
-                      ? 'bg-gradient-to-br from-gold-dark to-gold text-forest'
+                      ? 'bg-gold/10 border border-gold/30 ring-1 ring-gold/20'
                       : isMe
-                      ? 'bg-gradient-to-br from-blood-600 to-blood-800 text-white'
-                      : 'bg-gradient-to-br from-forest-50 to-forest-100 text-moon-dim'
-                  }`}>
-                    {player.name.charAt(0)}
-                  </div>
-                  {!isDead && (
-                    <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-heal border-2 border-forest" />
-                  )}
-                  {isDead && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-lg opacity-60">💀</span>
+                      ? 'glass border-blood/20 bg-blood/5'
+                      : 'glass active:scale-[0.97]'
+                  }`}
+                >
+                  {/* Wolf vote badge */}
+                  {wolfVotesOnThis > 0 && (
+                    <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-blood flex items-center justify-center">
+                      <span className="text-[9px] text-white font-bold">{wolfVotesOnThis}</span>
                     </div>
                   )}
-                  {player.id === room.hostId && !isDead && (
-                    <div className="absolute -top-1.5 -right-1.5 text-[10px]">👑</div>
-                  )}
-                </div>
 
-                {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`font-body font-medium truncate ${isDead ? 'line-through text-moon-mist' : ''}`}>
-                      {player.name}
-                    </span>
-                    {isMe && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blood/20 text-blood-400 tracking-wider shrink-0">
-                        我
+                  {/* 头像 + 座位号角标 */}
+                  <div className="relative shrink-0">
+                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold ${
+                      isDead
+                        ? 'bg-forest-100 text-moon-mist'
+                        : isCurrentSpeaker
+                        ? 'bg-gradient-to-br from-gold-dark to-gold text-forest'
+                        : isMe
+                        ? 'bg-gradient-to-br from-blood-600 to-blood-800 text-white'
+                        : 'bg-gradient-to-br from-forest-50 to-forest-100 text-moon-dim'
+                    }`}>
+                      {isDead ? '💀' : player.name.charAt(0)}
+                    </div>
+                    <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-forest-100 flex items-center justify-center text-[8px] text-moon-dim font-bold border border-forest-50/30">
+                      {player.seatIndex + 1}
+                    </div>
+                    {player.id === room.hostId && !isDead && (
+                      <div className="absolute -top-1.5 -right-1.5 text-[10px]">👑</div>
+                    )}
+                  </div>
+
+                  {/* 信息 */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`font-body text-sm font-medium truncate ${isDead ? 'line-through text-moon-mist' : ''}`}>
+                        {player.name}
                       </span>
-                    )}
+                      {isMe && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blood/20 text-blood-400 tracking-wider shrink-0">
+                          我
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-moon-mist mt-0.5">
+                      {isDead ? '已阵亡' : isCurrentSpeaker ? '🎤 正在发言' : hasPlayerSpoken ? '已发言' : isMe ? ROLES[myRole].name : ''}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-moon-mist mt-0.5">
-                    {isDead ? '已阵亡' : isCurrentSpeaker ? '正在发言...' : hasPlayerSpoken ? '已发言' : isMe ? ROLES[myRole].name : '等待发言'}
-                  </div>
-                </div>
 
-                {/* Speaking indicator or selection indicator */}
-                {isCurrentSpeaker && (
-                  <div className="w-6 h-6 rounded-full bg-gold/20 flex items-center justify-center animate-breathe">
-                    <span className="text-xs">🎤</span>
-                  </div>
-                )}
-                {isTargetable && !isCurrentSpeaker && (
-                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
-                    isSelected
-                      ? 'border-blood bg-blood text-white'
-                      : 'border-white/20'
-                  }`}>
-                    {isSelected && (
-                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                      </svg>
-                    )}
-                  </div>
-                )}
-              </button>
-            );
-          })}
+                  {/* 选择指示器 */}
+                  {isTargetable && !isCurrentSpeaker && (
+                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${
+                      isSelected
+                        ? 'border-blood bg-blood text-white'
+                        : 'border-white/20'
+                    }`}>
+                      {isSelected && (
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                    </div>
+                  )}
+                  {!isTargetable && !isCurrentSpeaker && !isDead && (
+                    <div className="w-1.5 h-1.5 rounded-full bg-heal animate-breathe shrink-0" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 狼队投票面板 */}
+          {isWolf && isWolfPhase && isAlive && (
+            <div className="mt-3 glass-dark rounded-xl px-3 py-2.5">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-xs">🐺</span>
+                <span className="text-[10px] text-blood-400 tracking-wider">狼队投票</span>
+                <span className="ml-auto text-[10px] text-moon-dim">
+                  {Object.keys(wolfVotes).length}/{room.players.filter(p => p.role && (p.role === Role.WEREWOLF || p.role === Role.WOLF_KING) && p.status === 'alive').length} 已确认
+                </span>
+              </div>
+              <div className="space-y-1">
+                {room.players
+                  .filter(p => p.role && (p.role === Role.WEREWOLF || p.role === Role.WOLF_KING))
+                  .map(wolf => {
+                    const confirmedVote = wolfVotes[wolf.id];
+                    const selection = wolfSelections[wolf.id];
+                    const targetId = confirmedVote || selection;
+                    const targetName = targetId ? room.players.find(p => p.id === targetId)?.name : null;
+                    const isMeWolf = wolf.id === myId;
+                    const isConfirmed = !!confirmedVote;
+                    return (
+                      <div key={wolf.id} className="flex items-center gap-1.5 text-[10px]">
+                        <span className={wolf.status === 'dead' ? 'line-through text-moon-mist' : 'text-blood-300'}>
+                          {isMeWolf ? '我' : wolf.name}
+                          {wolf.status === 'dead' ? '(亡)' : ''}
+                        </span>
+                        <span className="text-moon-mist">→</span>
+                        <span className={targetName ? (isConfirmed ? 'text-moon' : 'text-moon-dim') : 'text-moon-mist'}>
+                          {targetName || '未选择'}
+                          {targetName && !isConfirmed && ' (选)'}
+                        </span>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -411,7 +509,7 @@ export function Game() {
           <div className="glass-dark rounded-2xl p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="text-xs text-moon-dim tracking-wider">
-                {getActionName()}目标
+                {isWolfPhase ? '狼人投票' : `${getActionName()}目标`}
               </div>
               {selectedTarget && (
                 <div className="flex items-center gap-1.5 text-sm">
@@ -433,13 +531,35 @@ export function Game() {
                 </button>
               )}
 
-              <button
-                onClick={handleAction}
-                disabled={!selectedTarget}
-                className={`flex-1 py-3.5 rounded-xl font-display text-base tracking-wide text-white transition-all duration-200 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r ${getActionColor()}`}
-              >
-                {getActionName()} {selectedTarget ? room.players.find(p => p.id === selectedTarget)?.name : ''}
-              </button>
+              {/* 狼人投票：确认按钮 */}
+              {isWolfPhase && isWolf && (
+                <>
+                  {hasConfirmedWolfVote ? (
+                    <div className="flex-1 py-3.5 rounded-xl font-display text-base text-heal-400 text-center glass">
+                      已确认投票 → {room.players.find(p => p.id === myWolfVote)?.name}
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleAction}
+                      disabled={!selectedTarget}
+                      className={`flex-1 py-3.5 rounded-xl font-display text-base tracking-wide text-white transition-all duration-200 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r ${getActionColor()}`}
+                    >
+                      {myWolfSelection === selectedTarget ? '确认投票' : '选择'} {selectedTarget ? room.players.find(p => p.id === selectedTarget)?.name : ''}
+                    </button>
+                  )}
+                </>
+              )}
+
+              {/* 非狼人阶段的通用按钮 */}
+              {!(isWolfPhase && isWolf) && (
+                <button
+                  onClick={handleAction}
+                  disabled={!selectedTarget}
+                  className={`flex-1 py-3.5 rounded-xl font-display text-base tracking-wide text-white transition-all duration-200 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r ${getActionColor()}`}
+                >
+                  {getActionName()} {selectedTarget ? room.players.find(p => p.id === selectedTarget)?.name : ''}
+                </button>
+              )}
             </div>
           </div>
         </div>

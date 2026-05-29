@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Room, Player, GameState, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage } from '@werewolf/shared';
+import { Room, GameState, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage } from '@werewolf/shared';
 import { socket } from '../lib/socket';
 
 type View = 'home' | 'create' | 'room' | 'game';
@@ -46,6 +46,14 @@ interface GameStore {
   pendingSwapRequest: SeatSwapRequest | null;
   setPendingSwapRequest: (req: SeatSwapRequest | null) => void;
 
+  // 身份确认
+  roleConfirmed: boolean;
+  confirmedPlayers: string[];  // 已确认的玩家ID列表
+
+  // 狼人投票
+  wolfVotes: Record<string, string>;      // wolfId → targetId (已确认)
+  wolfSelections: Record<string, string>; // wolfId → targetId (仅选择)
+
   // 初始化socket监听
   initSocket: () => void;
 
@@ -66,6 +74,7 @@ interface GameStore {
   // 游戏操作
   confirmRole: () => void;
   werewolfKill: (targetId: string) => void;
+  wolfConfirmVote: () => void;
   seerCheck: (targetId: string) => void;
   witchSave: () => void;
   witchPoison: (targetId: string) => void;
@@ -88,6 +97,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   seerResult: null,
   error: null,
   pendingSwapRequest: null,
+  roleConfirmed: false,
+  confirmedPlayers: [],
+  wolfVotes: {},
+  wolfSelections: {},
 
   setCurrentView: (view) => set({ currentView: view }),
   setPendingName: (name) => set({ pendingName: name }),
@@ -149,7 +162,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
         myRole,
         currentView: 'game',
         systemMessages: [],
-        speaking: null
+        speaking: null,
+        roleConfirmed: false,
+        confirmedPlayers: [],
+        wolfVotes: {},
+        wolfSelections: {}
       });
     });
 
@@ -162,6 +179,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
           set({ speaking });
         }
         set({ gameState: { ...gameState, ...update } });
+        // 新阶段重置狼人投票和确认状态
+        if (phase === GamePhase.NIGHT_WEREWOLF) {
+          set({ wolfVotes: {}, wolfSelections: {} });
+        }
+        if (phase !== GamePhase.ROLE_CONFIRM) {
+          set({ roleConfirmed: false, confirmedPlayers: [] });
+        }
       }
     });
 
@@ -199,7 +223,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       console.log('Vote result:', votes, eliminated);
     });
 
-    socket.on('game:over', ({ winner, players }) => {
+    socket.on('game:over', ({ winner }) => {
       const gameState = get().gameState;
       if (gameState) {
         set({ gameState: { ...gameState, winner, phase: GamePhase.GAME_OVER } });
@@ -217,6 +241,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     socket.on('game:wolfKingRequired', ({ playerId }) => {
       console.log('Wolf king required:', playerId);
+    });
+
+    socket.on('game:roleConfirmed', ({ playerId }) => {
+      const confirmed = get().confirmedPlayers;
+      if (!confirmed.includes(playerId)) {
+        set({ confirmedPlayers: [...confirmed, playerId] });
+      }
+      if (playerId === socket.id) {
+        set({ roleConfirmed: true });
+      }
+    });
+
+    socket.on('game:wolfVoteUpdate', ({ wolfVotes }) => {
+      set({ wolfVotes });
+    });
+
+    socket.on('game:wolfSelectionUpdate', ({ selections }) => {
+      set({ wolfSelections: selections });
     });
   },
 
@@ -261,6 +303,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   werewolfKill: (targetId) => {
     socket.emit('game:werewolfKill', { targetId });
+  },
+
+  wolfConfirmVote: () => {
+    socket.emit('game:wolfConfirmVote');
   },
 
   seerCheck: (targetId) => {

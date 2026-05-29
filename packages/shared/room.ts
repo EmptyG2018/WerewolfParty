@@ -6,6 +6,7 @@ export interface RoomConfig {
   roles: Role[];
   wolfCount: number;
   voteTime: number;
+  roleConfirmTime: number;     // 确认身份倒计时（秒）
   hybridRoles: Role[];
 }
 
@@ -22,7 +23,8 @@ export const DEFAULT_ROOM_CONFIG: RoomConfig = {
   maxPlayers: 9,
   roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER],
   wolfCount: 3,
-  voteTime: 60,
+  voteTime: 180,
+  roleConfirmTime: 180,
   hybridRoles: []
 };
 

@@ -81,4 +81,5 @@ export interface GameState {
   lastGuardTarget: string | null;
   speaking: SpeakingState | null;
   wolfKingCanShoot: boolean;
+  wolfVotes: Record<string, string>;  // wolfId → targetId (狼人投票)
 }

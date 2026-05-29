@@ -24,7 +24,9 @@ export class GameManager {
   private gameStates: Map<string, GameState> = new Map();
   private phaseTimers: Map<string, NodeJS.Timeout> = new Map();
   private nightActions: Map<string, Map<Role, { targetId: string }>> = new Map();
-  private roleConfirmations: Map<string, Set<string>> = new Map();
+  private roleConfirmations: Map<string, Set<string>> = new Map();  // roomId → confirmed player IDs
+  private wolfVotes: Map<string, Map<string, string>> = new Map();  // roomId → (wolfId → targetId) 已确认
+  private wolfSelections: Map<string, Map<string, string>> = new Map();  // roomId → (wolfId → targetId) 仅选择
 
   constructor(roomManager: RoomManager, io: TypedServer) {
     this.roomManager = roomManager;
@@ -94,20 +96,38 @@ export class GameManager {
         playerSocket.emit('game:started', { gameState, myRole: player.role! });
       }
     });
+
+    // 确认身份：手动确认 + 倒计时双重机制
+    const confirmTime = room.config.roleConfirmTime;
+    this.io.to(room.id).emit('game:phaseChanged', { phase: GamePhase.ROLE_CONFIRM, timer: confirmTime });
+
+    const timeout = setTimeout(() => {
+      this.startNightPhase(room.id);
+    }, confirmTime * 1000);
+
+    this.phaseTimers.set(room.id, timeout);
   }
 
   confirmRole(socket: TypedSocket): void {
-    const ctx = this.validateContext(socket, GamePhase.ROLE_CONFIRM);
-    if (!ctx) return;
+    const room = this.roomManager.getRoomBySocket(socket);
+    if (!room) return;
 
-    const confirmed = this.roleConfirmations.get(ctx.room.id);
-    if (!confirmed) return;
+    const gameState = this.gameStates.get(room.id);
+    if (!gameState || gameState.phase !== GamePhase.ROLE_CONFIRM) return;
+
+    const confirmed = this.roleConfirmations.get(room.id);
+    if (!confirmed || confirmed.has(socket.id)) return;
 
     confirmed.add(socket.id);
 
-    if (confirmed.size >= ctx.room.players.length) {
-      this.roleConfirmations.delete(ctx.room.id);
-      this.startNightPhase(ctx.room.id);
+    // 广播给房间内所有人（让客户端显示谁已确认）
+    this.io.to(room.id).emit('game:roleConfirmed', { playerId: socket.id });
+
+    // 所有玩家都确认，立即进入夜晚
+    if (confirmed.size >= room.players.length) {
+      const timeout = this.phaseTimers.get(room.id);
+      if (timeout) clearTimeout(timeout);
+      this.startNightPhase(room.id);
     }
   }
 
@@ -119,6 +139,8 @@ export class GameManager {
     if (!room || !gameState) return;
 
     this.nightActions.set(roomId, new Map());
+    this.wolfVotes.set(roomId, new Map());
+    this.wolfSelections.set(roomId, new Map());
     const phases = this.engine.getNightPhases(room);
     this.runNightPhases(roomId, phases, 0);
   }
@@ -134,11 +156,16 @@ export class GameManager {
 
     const phase = phases[index];
     gameState.phase = phase;
-    this.io.to(roomId).emit('game:phaseChanged', { phase, timer: 0 });
+    this.io.to(roomId).emit('game:phaseChanged', { phase, timer: 180 });
 
     const timeout = setTimeout(() => {
-      this.runNightPhases(roomId, phases, index + 1);
-    }, 30000);
+      // 狼人阶段超时：用已确认的投票结算（未确认=弃票）
+      if (phase === GamePhase.NIGHT_WEREWOLF) {
+        this.resolveWolfPhase(roomId);
+      } else {
+        this.runNightPhases(roomId, phases, index + 1);
+      }
+    }, 180000);
 
     this.phaseTimers.set(roomId, timeout);
   }
@@ -150,16 +177,88 @@ export class GameManager {
     const target = ctx.room.players.find(p => p.id === targetId);
     if (!target || target.status === 'dead') return;
 
-    const actions = this.nightActions.get(ctx.room.id);
-    if (actions) actions.set(Role.WEREWOLF, { targetId });
-
-    // 检查所有狼人是否已行动
-    const wolves = ctx.room.players.filter(p => p.role !== null && isWolfRole(p.role) && p.status === 'alive');
-    const wolvesActed = wolves.every(() => actions?.has(Role.WEREWOLF));
-
-    if (wolvesActed) {
-      this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_WEREWOLF);
+    // 记录选择（仅本地广播，不确认投票）
+    let selections = this.wolfSelections.get(ctx.room.id);
+    if (!selections) {
+      selections = new Map();
+      this.wolfSelections.set(ctx.room.id, selections);
     }
+    selections.set(socket.id, targetId);
+
+    // 广播选择更新给房间内所有人（让狼队友看到谁选了谁）
+    const selectionsObj: Record<string, string> = {};
+    selections.forEach((tid, wid) => { selectionsObj[wid] = tid; });
+    this.io.to(ctx.room.id).emit('game:wolfSelectionUpdate', { selections: selectionsObj });
+  }
+
+  wolfConfirmVote(socket: TypedSocket): void {
+    const ctx = this.validateContext(socket, GamePhase.NIGHT_WEREWOLF);
+    if (!ctx || !ctx.player.role || !isWolfRole(ctx.player.role) || ctx.player.status === 'dead') return;
+
+    const selections = this.wolfSelections.get(ctx.room.id);
+    const targetId = selections?.get(socket.id);
+    if (!targetId) {
+      socket.emit('game:error', { message: '请先选择目标' });
+      return;
+    }
+
+    // 确认投票
+    let votes = this.wolfVotes.get(ctx.room.id);
+    if (!votes) {
+      votes = new Map();
+      this.wolfVotes.set(ctx.room.id, votes);
+    }
+    votes.set(socket.id, targetId);
+
+    // 广播投票确认
+    const wolfVotesObj: Record<string, string> = {};
+    votes.forEach((tid, wid) => { wolfVotesObj[wid] = tid; });
+    this.io.to(ctx.room.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj });
+
+    // 检查所有存活狼人是否都已确认投票
+    const wolves = ctx.room.players.filter(p => p.role !== null && isWolfRole(p.role) && p.status === 'alive');
+    const allVoted = wolves.every(w => votes.has(w.id));
+
+    if (allVoted) {
+      this.resolveWolfPhase(ctx.room.id);
+    }
+  }
+
+  /** 狼人阶段结算：全部弃票=平安夜，平票随机，否则多数票 */
+  private resolveWolfPhase(roomId: string): void {
+    const room = this.roomManager.getRoom(roomId);
+    const votes = this.wolfVotes.get(roomId);
+    if (!room) return;
+
+    const wolves = room.players.filter(p => p.role !== null && isWolfRole(p.role) && p.status === 'alive');
+    const finalTarget = this.resolveWolfVote(votes || new Map(), wolves);
+
+    const actions = this.nightActions.get(roomId);
+    if (actions && finalTarget) actions.set(Role.WEREWOLF, { targetId: finalTarget });
+
+    const timeout = this.phaseTimers.get(roomId);
+    if (timeout) clearTimeout(timeout);
+    this.advanceNightPhase(roomId, GamePhase.NIGHT_WEREWOLF);
+  }
+
+  /** 狼人投票结算：全部弃票=null，平票随机，否则多数票 */
+  private resolveWolfVote(votes: Map<string, string>, wolves: Player[]): string | null {
+    const counts: Record<string, number> = {};
+    wolves.forEach(w => {
+      const target = votes.get(w.id);
+      if (target) counts[target] = (counts[target] || 0) + 1;
+    });
+
+    const entries = Object.entries(counts);
+    if (entries.length === 0) return null;  // 全部弃票 → 平安夜
+
+    // 找出最高票数
+    let maxCount = 0;
+    entries.forEach(([, count]) => { if (count > maxCount) maxCount = count; });
+
+    // 收集最高票候选
+    const candidates = entries.filter(([, count]) => count === maxCount).map(([id]) => id);
+    return candidates[Math.floor(Math.random() * candidates.length)];
   }
 
   seerCheck(socket: TypedSocket, targetId: string): void {
@@ -249,13 +348,13 @@ export class GameManager {
 
     if (result.wolfKingCanShoot) {
       gameState.phase = GamePhase.WOLF_KING_SHOOT;
-      this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.WOLF_KING_SHOOT, timer: 15 });
+      this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.WOLF_KING_SHOOT, timer: 180 });
       this.io.to(result.killedPlayerId!).emit('game:wolfKingRequired', { playerId: result.killedPlayerId! });
 
       const timeout = setTimeout(() => {
         gameState.wolfKingCanShoot = false;
         this.startDayPhase(roomId, result.deadPlayerIds);
-      }, 15000);
+      }, 180000);
       this.phaseTimers.set(roomId, timeout);
       return;
     }
@@ -290,8 +389,8 @@ export class GameManager {
       });
     }
 
-    this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.DAY_ANNOUNCE, timer: 5 });
-    setTimeout(() => this.startSpeakingPhase(roomId), 5000);
+    this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.DAY_ANNOUNCE, timer: 180 });
+    setTimeout(() => this.startSpeakingPhase(roomId), 180000);
   }
 
   private startSpeakingPhase(roomId: string): void {
@@ -303,7 +402,7 @@ export class GameManager {
     gameState.votes = {};
 
     const speaking: SpeakingState = {
-      order: this.engine.buildSpeakingOrder(room),
+      order: this.engine.buildSpeakingOrder(room, gameState.lastKilledPlayer),
       currentIndex: 0,
       confirmed: []
     };
@@ -408,7 +507,7 @@ export class GameManager {
 
     if (ctx.gameState.phase === GamePhase.DAY_ANNOUNCE || ctx.gameState.phase === GamePhase.DAY_VOTE) {
       ctx.gameState.day++;
-      setTimeout(() => this.startNightPhase(ctx.room.id), 3000);
+      setTimeout(() => this.startNightPhase(ctx.room.id), 180000);
     }
   }
 
@@ -450,7 +549,7 @@ export class GameManager {
     }
 
     gameState.day++;
-    setTimeout(() => this.startNightPhase(roomId), 3000);
+    setTimeout(() => this.startNightPhase(roomId), 180000);
   }
 
   private endGame(roomId: string, winner: 'villager' | 'werewolf'): void {
@@ -475,5 +574,7 @@ export class GameManager {
     this.gameStates.delete(roomId);
     this.nightActions.delete(roomId);
     this.roleConfirmations.delete(roomId);
+    this.wolfVotes.delete(roomId);
+    this.wolfSelections.delete(roomId);
   }
 }

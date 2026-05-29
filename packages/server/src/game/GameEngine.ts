@@ -153,11 +153,32 @@ export class GameEngine {
     return null;
   }
 
-  /** 随机打乱发言顺序 */
-  buildSpeakingOrder(room: Room): string[] {
+  /** 发言顺序：从昨晚被刀者下一位开始，随机正序或反序 */
+  buildSpeakingOrder(room: Room, lastKilledPlayerId: string | null): string[] {
     const alivePlayers = room.players.filter(p => p.status === 'alive');
-    const shuffled = [...alivePlayers].sort(() => Math.random() - 0.5);
-    return shuffled.map(p => p.id);
+    if (alivePlayers.length === 0) return [];
+
+    // 按座位号排序
+    const sorted = [...alivePlayers].sort((a, b) => a.seatIndex - b.seatIndex);
+
+    // 找到被刀者的座位号
+    let startIdx = 0;
+    if (lastKilledPlayerId) {
+      const killedPlayer = room.players.find(p => p.id === lastKilledPlayerId);
+      if (killedPlayer) {
+        // 从被刀者下一位开始
+        const nextIdx = sorted.findIndex(p => p.seatIndex > killedPlayer.seatIndex);
+        startIdx = nextIdx >= 0 ? nextIdx : 0;
+      }
+    }
+
+    // 随机正序或反序
+    const forward = Math.random() < 0.5;
+    const ordered = forward
+      ? [...sorted.slice(startIdx), ...sorted.slice(0, startIdx)]
+      : [...sorted.slice(0, startIdx).reverse(), ...sorted.slice(startIdx).reverse()];
+
+    return ordered.map(p => p.id);
   }
 
   /** 初始化新游戏状态 */
@@ -177,7 +198,8 @@ export class GameEngine {
       lastKilledPlayer: null,
       lastGuardTarget: null,
       speaking: null,
-      wolfKingCanShoot: false
+      wolfKingCanShoot: false,
+      wolfVotes: {}
     };
   }
 }

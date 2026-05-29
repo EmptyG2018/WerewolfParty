@@ -13,6 +13,7 @@ export interface ClientToServerEvents {
   'room:rejectSwap': () => void;
   'game:confirmRole': () => void;
   'game:werewolfKill': (data: { targetId: string }) => void;
+  'game:wolfConfirmVote': () => void;
   'game:seerCheck': (data: { targetId: string }) => void;
   'game:witchSave': () => void;
   'game:witchPoison': (data: { targetId: string }) => void;
@@ -37,6 +38,9 @@ export interface ServerToClientEvents {
   'game:speakingUpdate': (data: { speaking: SpeakingState }) => void;
   'game:playerDead': (data: { playerId: string; reason: string }) => void;
   'game:seerResult': (data: { playerId: string; isWerewolf: boolean }) => void;
+  'game:wolfVoteUpdate': (data: { wolfVotes: Record<string, string> }) => void;
+  'game:wolfSelectionUpdate': (data: { selections: Record<string, string> }) => void;
+  'game:roleConfirmed': (data: { playerId: string }) => void;
   'game:voteResult': (data: { votes: Record<string, number>; eliminated: string | null }) => void;
   'game:over': (data: { winner: 'villager' | 'werewolf'; players: Player[] }) => void;
   'game:systemMessage': (data: SystemMessage) => void;

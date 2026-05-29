@@ -72,13 +72,17 @@ io.on('connection', (socket) => {
     gameManager.startGame(socket);
   });
 
+  // 游戏事件
   socket.on('game:confirmRole', () => {
     gameManager.confirmRole(socket);
   });
 
-  // 游戏事件
   socket.on('game:werewolfKill', (data) => {
     gameManager.werewolfKill(socket, data.targetId);
+  });
+
+  socket.on('game:wolfConfirmVote', () => {
+    gameManager.wolfConfirmVote(socket);
   });
 
   socket.on('game:seerCheck', (data) => {

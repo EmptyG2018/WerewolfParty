@@ -15,7 +15,7 @@ interface CustomConfig {
 
 function toRoomConfig(custom: CustomConfig): RoomConfig {
   const roles: Role[] = [Role.WEREWOLF, ...custom.enabledExtras];
-  return { maxPlayers: custom.maxPlayers, roles, wolfCount: custom.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, hybridRoles: [...custom.hybridRoles] };
+  return { maxPlayers: custom.maxPlayers, roles, wolfCount: custom.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime, hybridRoles: [...custom.hybridRoles] };
 }
 
 export function CreateRoom() {
@@ -32,7 +32,7 @@ export function CreateRoom() {
 
   // --- Derived ---
   const currentConfig = mode === 'preset'
-    ? (() => { const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!; return { maxPlayers: p.playerCount, roles: p.roles, wolfCount: p.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, hybridRoles: p.hybridRoles }; })()
+    ? (() => { const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!; return { maxPlayers: p.playerCount, roles: p.roles, wolfCount: p.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime, hybridRoles: p.hybridRoles }; })()
     : toRoomConfig(custom);
   const currentCounts = calcCampCounts(currentConfig);
 
