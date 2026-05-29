@@ -56,7 +56,8 @@ export class GameManager {
       witchPoisonUsed: false,
       lastKilledPlayer: null,
       lastGuardTarget: null,
-      speaking: null
+      speaking: null,
+      wolfKingCanShoot: false
     };
 
     room.status = 'playing';
@@ -161,7 +162,7 @@ export class GameManager {
     if (!gameState || gameState.phase !== GamePhase.NIGHT_WEREWOLF) return;
 
     const player = room.players.find(p => p.id === socket.id);
-    if (!player || player.role !== Role.WEREWOLF || player.status === 'dead') return;
+    if (!player || (player.role !== Role.WEREWOLF && player.role !== Role.WOLF_KING) || player.status === 'dead') return;
 
     const target = room.players.find(p => p.id === targetId);
     if (!target || target.status === 'dead') return;
@@ -171,7 +172,7 @@ export class GameManager {
       nightActions.set(Role.WEREWOLF, { targetId });
     }
 
-    const wolves = room.players.filter(p => p.role === Role.WEREWOLF && p.status === 'alive');
+    const wolves = room.players.filter(p => (p.role === Role.WEREWOLF || p.role === Role.WOLF_KING) && p.status === 'alive');
     const wolvesActed = wolves.every(() => {
       const actions = this.nightActions.get(room.id);
       return actions?.has(Role.WEREWOLF);
@@ -358,9 +359,31 @@ export class GameManager {
 
     gameState.lastKilledPlayer = killedPlayerId;
 
+    // 狼王被狼人击杀时可开枪
+    if (killedPlayerId) {
+      const killedPlayer = room.players.find(p => p.id === killedPlayerId);
+      if (killedPlayer && killedPlayer.role === Role.WOLF_KING) {
+        gameState.wolfKingCanShoot = true;
+      }
+    }
+
     const winner = this.checkWinner(room);
     if (winner) {
       this.endGame(roomId, winner);
+      return;
+    }
+
+    // 如果狼王需要开枪，进入狼王开枪阶段
+    if (gameState.wolfKingCanShoot) {
+      gameState.phase = GamePhase.WOLF_KING_SHOOT;
+      this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.WOLF_KING_SHOOT, timer: 15 });
+      this.io.to(killedPlayerId!).emit('game:wolfKingRequired', { playerId: killedPlayerId! });
+
+      const timeout = setTimeout(() => {
+        gameState.wolfKingCanShoot = false;
+        this.startDayPhase(roomId, deadPlayers);
+      }, 15000);
+      this.phaseTimers.set(roomId, timeout);
       return;
     }
 
@@ -623,10 +646,49 @@ export class GameManager {
     }
   }
 
+  wolfKingShoot(socket: TypedSocket, targetId: string): void {
+    const room = this.roomManager.getRoomBySocket(socket);
+    if (!room) return;
+
+    const gameState = this.gameStates.get(room.id);
+    if (!gameState || gameState.phase !== GamePhase.WOLF_KING_SHOOT) return;
+
+    const player = room.players.find(p => p.id === socket.id);
+    if (!player || player.role !== Role.WOLF_KING) return;
+
+    const target = room.players.find(p => p.id === targetId);
+    if (!target || target.status === 'dead') return;
+
+    target.status = 'dead';
+    gameState.deadPlayers.push({
+      playerId: targetId,
+      reason: 'shot',
+      day: gameState.day
+    });
+
+    this.io.to(room.id).emit('game:playerDead', {
+      playerId: targetId,
+      reason: 'shot'
+    });
+
+    gameState.wolfKingCanShoot = false;
+
+    const timeout = this.phaseTimers.get(room.id);
+    if (timeout) clearTimeout(timeout);
+
+    const winner = this.checkWinner(room);
+    if (winner) {
+      this.endGame(room.id, winner);
+      return;
+    }
+
+    this.startDayPhase(room.id, [gameState.lastKilledPlayer!, targetId]);
+  }
+
   private checkWinner(room: Room): 'villager' | 'werewolf' | null {
     const alivePlayers = room.players.filter(p => p.status === 'alive');
-    const aliveWolves = alivePlayers.filter(p => p.role === Role.WEREWOLF);
-    const aliveVillagers = alivePlayers.filter(p => p.role !== Role.WEREWOLF);
+    const aliveWolves = alivePlayers.filter(p => p.role === Role.WEREWOLF || p.role === Role.WOLF_KING);
+    const aliveVillagers = alivePlayers.filter(p => p.role !== Role.WEREWOLF && p.role !== Role.WOLF_KING);
 
     if (aliveWolves.length === 0) return 'villager';
     if (aliveWolves.length >= aliveVillagers.length) return 'werewolf';

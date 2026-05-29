@@ -63,6 +63,7 @@ interface GameStore {
   vote: (targetId: string) => void;
   speakingDone: () => void;
   hunterShoot: (targetId: string) => void;
+  wolfKingShoot: (targetId: string) => void;
 }
 
 export const useGameStore = create<GameStore>((set, get) => ({
@@ -190,6 +191,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.on('game:hunterRequired', ({ playerId }) => {
       console.log('Hunter required:', playerId);
     });
+
+    socket.on('game:wolfKingRequired', ({ playerId }) => {
+      console.log('Wolf king required:', playerId);
+    });
   },
 
   createRoom: (playerName, config) => {
@@ -243,5 +248,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   hunterShoot: (targetId) => {
     socket.emit('game:hunterShoot', { targetId });
+  },
+
+  wolfKingShoot: (targetId) => {
+    socket.emit('game:wolfKingShoot', { targetId });
   }
 }));

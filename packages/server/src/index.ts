@@ -90,6 +90,10 @@ io.on('connection', (socket) => {
     gameManager.hunterShoot(socket, data.targetId);
   });
 
+  socket.on('game:wolfKingShoot', (data) => {
+    gameManager.wolfKingShoot(socket, data.targetId);
+  });
+
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
     roomManager.handleDisconnect(socket);

@@ -2,6 +2,7 @@
 export enum Role {
   VILLAGER = 'villager',
   WEREWOLF = 'werewolf',
+  WOLF_KING = 'wolf_king',
   SEER = 'seer',
   WITCH = 'witch',
   HUNTER = 'hunter',
@@ -33,6 +34,14 @@ export const ROLES: Record<Role, RoleInfo> = {
     description: '每晚可以击杀一名玩家',
     skill: '击杀',
     canDisable: false
+  },
+  [Role.WOLF_KING]: {
+    id: Role.WOLF_KING,
+    name: '狼王',
+    camp: 'werewolf',
+    description: '被狼人击杀时可开枪带走一人，被毒或被投票出局不能发动',
+    skill: '临终一击',
+    canDisable: true
   },
   [Role.SEER]: {
     id: Role.SEER,
@@ -82,15 +91,15 @@ export const ROLE_PRESETS: RolePreset[] = [
     id: 'preset-9',
     name: '9人标准局',
     playerCount: 9,
-    roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+    roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER],
     wolfCount: 3
   },
   {
     id: 'preset-12',
     name: '12人进阶局',
     playerCount: 12,
-    roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
-    wolfCount: 4
+    roles: [Role.WEREWOLF, Role.WOLF_KING, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+    wolfCount: 3
   }
 ];
 
@@ -105,6 +114,7 @@ export enum GamePhase {
   DAY_SPEAKING = 'day_speaking',
   DAY_VOTE = 'day_vote',
   HUNTER_SHOOT = 'hunter_shoot',
+  WOLF_KING_SHOOT = 'wolf_king_shoot',
   GAME_OVER = 'game_over'
 }
 
@@ -188,6 +198,7 @@ export interface GameState {
   lastKilledPlayer: string | null;
   lastGuardTarget: string | null;
   speaking: SpeakingState | null;
+  wolfKingCanShoot: boolean;
 }
 
 // Socket.IO 事件类型
@@ -205,6 +216,7 @@ export interface ClientToServerEvents {
   'game:vote': (data: { targetId: string }) => void;
   'game:speakingDone': () => void;
   'game:hunterShoot': (data: { targetId: string }) => void;
+  'game:wolfKingShoot': (data: { targetId: string }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -224,6 +236,7 @@ export interface ServerToClientEvents {
   'game:systemMessage': (data: SystemMessage) => void;
   'game:error': (data: { message: string }) => void;
   'game:hunterRequired': (data: { playerId: string }) => void;
+  'game:wolfKingRequired': (data: { playerId: string }) => void;
 }
 
 // 广播消息

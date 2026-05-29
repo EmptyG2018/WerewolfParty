@@ -6,7 +6,7 @@ export function Game() {
   const {
     room, myId, myRole, gameState, speaking, seerResult, error,
     werewolfKill, seerCheck, witchSave, witchPoison, guardProtect,
-    vote, speakingDone, hunterShoot, setSeerResult
+    vote, speakingDone, hunterShoot, wolfKingShoot, setSeerResult
   } = useGameStore();
 
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
@@ -29,7 +29,8 @@ export function Game() {
       [GamePhase.DAY_SPEAKING]: '轮流发言',
       [GamePhase.DAY_VOTE]: '投票处决',
       [GamePhase.HUNTER_SHOOT]: '临终一击',
-      [GamePhase.GAME_OVER]: '尘埃落定'
+      [GamePhase.GAME_OVER]: '尘埃落定',
+      [GamePhase.WOLF_KING_SHOOT]: '狼王遗言'
     };
     return names[phase] || phase;
   };
@@ -45,7 +46,8 @@ export function Game() {
       [GamePhase.DAY_SPEAKING]: '🎤',
       [GamePhase.DAY_VOTE]: '⚔️',
       [GamePhase.HUNTER_SHOOT]: '🔫',
-      [GamePhase.GAME_OVER]: '🏆'
+      [GamePhase.GAME_OVER]: '🏆',
+      [GamePhase.WOLF_KING_SHOOT]: '👑'
     };
     return emojis[phase] || '🌙';
   };
@@ -58,7 +60,7 @@ export function Game() {
     if (!selectedTarget) return;
     switch (currentPhase) {
       case GamePhase.NIGHT_WEREWOLF:
-        if (myRole === Role.WEREWOLF) werewolfKill(selectedTarget);
+        if (myRole === Role.WEREWOLF || myRole === Role.WOLF_KING) werewolfKill(selectedTarget);
         break;
       case GamePhase.NIGHT_SEER:
         if (myRole === Role.SEER) seerCheck(selectedTarget);
@@ -75,6 +77,9 @@ export function Game() {
       case GamePhase.HUNTER_SHOOT:
         if (myRole === Role.HUNTER) hunterShoot(selectedTarget);
         break;
+      case GamePhase.WOLF_KING_SHOOT:
+        if (myRole === Role.WOLF_KING) wolfKingShoot(selectedTarget);
+        break;
     }
     setSelectedTarget(null);
   };
@@ -82,12 +87,13 @@ export function Game() {
   const canAct = () => {
     if (!isAlive) return false;
     switch (currentPhase) {
-      case GamePhase.NIGHT_WEREWOLF: return myRole === Role.WEREWOLF;
+      case GamePhase.NIGHT_WEREWOLF: return myRole === Role.WEREWOLF || myRole === Role.WOLF_KING;
       case GamePhase.NIGHT_SEER: return myRole === Role.SEER;
       case GamePhase.NIGHT_WITCH: return myRole === Role.WITCH;
       case GamePhase.NIGHT_GUARD: return myRole === Role.GUARD;
       case GamePhase.DAY_VOTE: return true;
       case GamePhase.HUNTER_SHOOT: return myRole === Role.HUNTER;
+      case GamePhase.WOLF_KING_SHOOT: return myRole === Role.WOLF_KING;
       default: return false;
     }
   };
@@ -100,6 +106,7 @@ export function Game() {
       case GamePhase.NIGHT_GUARD: return '守护';
       case GamePhase.DAY_VOTE: return '投票淘汰';
       case GamePhase.HUNTER_SHOOT: return '开枪带走';
+      case GamePhase.WOLF_KING_SHOOT: return '开枪带走';
       default: return '';
     }
   };
@@ -112,6 +119,7 @@ export function Game() {
       case GamePhase.NIGHT_GUARD: return 'from-blue-700 to-blue-500';
       case GamePhase.DAY_VOTE: return 'from-blood-700 to-blood';
       case GamePhase.HUNTER_SHOOT: return 'from-amber-700 to-amber-500';
+      case GamePhase.WOLF_KING_SHOOT: return 'from-purple-700 to-purple-500';
       default: return 'from-blood-700 to-blood';
     }
   };

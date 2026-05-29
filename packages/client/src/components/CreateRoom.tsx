@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
 import { Role, ROLES, ROLE_PRESETS, RoomConfig, DEFAULT_ROOM_CONFIG, MIN_PLAYERS, MAX_PLAYERS } from '@werewolf/shared';
 
-const SPECIAL_ROLES = [Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD];
+const WOLF_ROLES = [Role.WOLF_KING];
+const VILLAGER_ROLES = [Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD];
 
 interface CustomConfig {
   maxPlayers: number;
@@ -18,7 +19,7 @@ export function CreateRoom() {
   const [custom, setCustom] = useState<CustomConfig>({
     maxPlayers: 9,
     wolfCount: 3,
-    enabledRoles: new Set(SPECIAL_ROLES),
+    enabledRoles: new Set(VILLAGER_ROLES),
   });
 
   // --- Validation ---
@@ -32,9 +33,11 @@ export function CreateRoom() {
     if (custom.wolfCount < 1) {
       return { valid: false, message: '至少需要1名狼人' };
     }
+    const wolfKingEnabled = custom.enabledRoles.has(Role.WOLF_KING);
+    const totalWolves = custom.wolfCount + (wolfKingEnabled ? 1 : 0);
     const maxWolves = Math.floor((custom.maxPlayers - 1) / 2);
-    if (custom.wolfCount > maxWolves) {
-      return { valid: false, message: `狼人数量不能超过${maxWolves}（需少于好人数量）` };
+    if (totalWolves > maxWolves) {
+      return { valid: false, message: `狼人总数（含狼王）不能超过${maxWolves}（需少于好人数量）` };
     }
     return { valid: true, message: '' };
   };
@@ -64,7 +67,7 @@ export function CreateRoom() {
   const villagerCount = mode === 'preset'
     ? (() => {
         const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!;
-        return p.playerCount - p.wolfCount - p.roles.filter(r => r !== Role.WEREWOLF).length;
+        return p.playerCount - p.wolfCount - p.roles.filter(r => r !== Role.WEREWOLF && r !== Role.WOLF_KING).length;
       })()
     : custom.maxPlayers - custom.wolfCount - custom.enabledRoles.size;
 
@@ -178,23 +181,37 @@ export function CreateRoom() {
             {/* Preset detail */}
             {(() => {
               const preset = ROLE_PRESETS.find(p => p.id === selectedPreset)!;
+              const hasWolfKing = preset.roles.includes(Role.WOLF_KING);
+              const specialCount = preset.roles.filter(r => r !== Role.WEREWOLF && r !== Role.WOLF_KING).length;
+              const villagerCount = preset.playerCount - preset.wolfCount - specialCount;
               return (
                 <div className="glass rounded-2xl p-4 animate-slide-up" style={{ animationDelay: '0.1s' }}>
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div className="bg-forest-50/50 rounded-xl p-3 text-center">
-                      <div className="text-moon-mist text-[10px] tracking-wider mb-1">狼人</div>
+                      <div className="text-moon-mist text-[10px] tracking-wider mb-1">普狼</div>
                       <div className="font-display text-xl text-blood-400">{preset.wolfCount}</div>
                     </div>
-                    <div className="bg-forest-50/50 rounded-xl p-3 text-center">
-                      <div className="text-moon-mist text-[10px] tracking-wider mb-1">村民</div>
-                      <div className="font-display text-xl text-heal-400">
-                        {preset.playerCount - preset.wolfCount - preset.roles.filter(r => r !== Role.WEREWOLF).length}
+                    {hasWolfKing ? (
+                      <div className="bg-forest-50/50 rounded-xl p-3 text-center">
+                        <div className="text-moon-mist text-[10px] tracking-wider mb-1">狼王</div>
+                        <div className="font-display text-xl text-blood-400">1</div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="bg-forest-50/50 rounded-xl p-3 text-center">
+                        <div className="text-moon-mist text-[10px] tracking-wider mb-1">村民</div>
+                        <div className="font-display text-xl text-heal-400">{villagerCount}</div>
+                      </div>
+                    )}
                   </div>
-                  <div className="text-xs text-moon-dim mb-2">特殊角色</div>
+                  {hasWolfKing && (
+                    <div className="bg-forest-50/50 rounded-xl p-3 text-center mb-3">
+                      <div className="text-moon-mist text-[10px] tracking-wider mb-1">村民</div>
+                      <div className="font-display text-xl text-heal-400">{villagerCount}</div>
+                    </div>
+                  )}
+                  <div className="text-xs text-moon-dim mb-2">好人阵营</div>
                   <div className="flex flex-wrap gap-1.5">
-                    {preset.roles.filter(r => r !== Role.WEREWOLF).map(role => (
+                    {preset.roles.filter(r => r !== Role.WEREWOLF && r !== Role.WOLF_KING).map(role => (
                       <span key={role} className="text-xs px-2.5 py-1 rounded-lg bg-white/[0.05] text-moon-dim">
                         {getRoleName(role)}
                       </span>
@@ -251,7 +268,7 @@ export function CreateRoom() {
                 </div>
                 <button
                   onClick={() => adjustWolf(1)}
-                  disabled={custom.wolfCount >= Math.floor((custom.maxPlayers - 1) / 2)}
+                  disabled={custom.wolfCount >= Math.floor((custom.maxPlayers - 1) / 2) - (custom.enabledRoles.has(Role.WOLF_KING) ? 1 : 0)}
                   className="w-10 h-10 rounded-xl bg-forest-50/50 flex items-center justify-center text-moon-dim hover:text-moon disabled:opacity-30 transition-colors text-xl"
                 >
                   +
@@ -259,11 +276,55 @@ export function CreateRoom() {
               </div>
             </div>
 
-            {/* Special roles */}
+            {/* Wolf camp roles */}
             <div className="animate-slide-up" style={{ animationDelay: '0.1s' }}>
-              <p className="text-xs text-moon-dim tracking-wider uppercase mb-3">特殊角色</p>
+              <p className="text-xs text-moon-dim tracking-wider uppercase mb-3">狼人阵营</p>
               <div className="grid grid-cols-2 gap-2.5">
-                {SPECIAL_ROLES.map(role => {
+                {WOLF_ROLES.map(role => {
+                  const enabled = custom.enabledRoles.has(role);
+                  return (
+                    <button
+                      key={role}
+                      onClick={() => toggleRole(role)}
+                      className={`flex items-center gap-3 p-4 rounded-2xl transition-all duration-200 ${
+                        enabled
+                          ? 'bg-blood/10 border border-blood/30 ring-1 ring-blood/10'
+                          : 'glass hover:bg-white/[0.06]'
+                      }`}
+                    >
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${
+                        enabled ? 'bg-blood/20' : 'bg-forest-50/50'
+                      }`}>
+                        {getRoleEmoji(role)}
+                      </div>
+                      <div className="text-left">
+                        <div className={`text-sm font-body ${enabled ? 'text-blood-400' : 'text-moon-dim'}`}>
+                          {getRoleName(role)}
+                        </div>
+                        <div className="text-[10px] text-moon-mist">{ROLES[role].skill}</div>
+                      </div>
+                      <div className={`ml-auto w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                        enabled
+                          ? 'border-blood bg-blood text-white'
+                          : 'border-white/20'
+                      }`}>
+                        {enabled && (
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Villager camp roles */}
+            <div className="animate-slide-up" style={{ animationDelay: '0.15s' }}>
+              <p className="text-xs text-moon-dim tracking-wider uppercase mb-3">好人阵营</p>
+              <div className="grid grid-cols-2 gap-2.5">
+                {VILLAGER_ROLES.map(role => {
                   const enabled = custom.enabledRoles.has(role);
                   return (
                     <button
@@ -304,7 +365,7 @@ export function CreateRoom() {
             </div>
 
             {/* Villager auto-fill */}
-            <div className="animate-slide-up" style={{ animationDelay: '0.15s' }}>
+            <div className="animate-slide-up" style={{ animationDelay: '0.2s' }}>
               <div className="glass rounded-2xl p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -358,6 +419,7 @@ function getRoleEmoji(role: Role): string {
   const emojis: Record<Role, string> = {
     [Role.VILLAGER]: '👤',
     [Role.WEREWOLF]: '🐺',
+    [Role.WOLF_KING]: '👑',
     [Role.SEER]: '🔮',
     [Role.WITCH]: '🧪',
     [Role.HUNTER]: '🔫',
