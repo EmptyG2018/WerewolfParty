@@ -5,7 +5,7 @@ import { GamePhase, Role, ROLES } from '@werewolf/shared';
 export function Game() {
   const {
     room, myId, myRole, gameState, speaking, seerResult, error,
-    werewolfKill, seerCheck, witchSave, witchPoison, guardProtect,
+    confirmRole, werewolfKill, seerCheck, witchSave, witchPoison, guardProtect,
     vote, speakingDone, hunterShoot, wolfKingShoot, setSeerResult
   } = useGameStore();
 
@@ -21,6 +21,7 @@ export function Game() {
   const getPhaseName = (phase: GamePhase) => {
     const names: Record<GamePhase, string> = {
       [GamePhase.WAITING]: '等待中',
+      [GamePhase.ROLE_CONFIRM]: '确认身份',
       [GamePhase.NIGHT_WEREWOLF]: '月黑风高',
       [GamePhase.NIGHT_SEER]: '预言时刻',
       [GamePhase.NIGHT_WITCH]: '魔药抉择',
@@ -38,6 +39,7 @@ export function Game() {
   const getPhaseEmoji = (phase: GamePhase) => {
     const emojis: Record<GamePhase, string> = {
       [GamePhase.WAITING]: '⏳',
+      [GamePhase.ROLE_CONFIRM]: '🎭',
       [GamePhase.NIGHT_WEREWOLF]: '🌑',
       [GamePhase.NIGHT_SEER]: '🔮',
       [GamePhase.NIGHT_WITCH]: '🧪',
@@ -50,10 +52,6 @@ export function Game() {
       [GamePhase.WOLF_KING_SHOOT]: '👑'
     };
     return emojis[phase] || '🌙';
-  };
-
-  const getCampName = (role: Role) => {
-    return ROLES[role]?.camp === 'werewolf' ? '狼人阵营' : '好人阵营';
   };
 
   const handleAction = () => {
@@ -146,6 +144,59 @@ export function Game() {
       {/* Day atmosphere */}
       {!isNight && currentPhase !== GamePhase.GAME_OVER && (
         <div className="absolute inset-0 bg-gradient-to-b from-amber-950/10 via-transparent to-transparent pointer-events-none" />
+      )}
+
+      {/* Role Confirmation Overlay */}
+      {currentPhase === GamePhase.ROLE_CONFIRM && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-forest/95 backdrop-blur-sm">
+          <div className="w-full max-w-sm">
+            {/* Role card */}
+            <div className="glass rounded-3xl p-6 text-center space-y-5">
+              {/* Role emoji */}
+              <div className="text-6xl">
+                {ROLES[myRole].camp === 'werewolf' ? '🐺' : '👤'}
+              </div>
+
+              {/* Role name */}
+              <div>
+                <div className="text-[10px] text-moon-dim tracking-widest mb-1">你的身份</div>
+                <div className="font-display text-2xl text-white">{ROLES[myRole].name}</div>
+              </div>
+
+              {/* Camp badge */}
+              <div className={`inline-block px-4 py-1.5 rounded-full text-xs font-medium tracking-wide ${
+                ROLES[myRole].camp === 'werewolf'
+                  ? 'bg-blood/20 text-blood-400 border border-blood/30'
+                  : 'bg-heal/20 text-heal-400 border border-heal/30'
+              }`}>
+                {ROLES[myRole].camp === 'werewolf' ? '狼人阵营' : '好人阵营'}
+              </div>
+
+              {/* Description */}
+              <div className="glass-light rounded-2xl p-4 space-y-3">
+                <div>
+                  <div className="text-[10px] text-moon-dim tracking-widest mb-1">角色介绍</div>
+                  <div className="text-sm text-moon leading-relaxed">{ROLES[myRole].description}</div>
+                </div>
+                <div className="h-px bg-white/5" />
+                <div>
+                  <div className="text-[10px] text-moon-dim tracking-widest mb-1">技能</div>
+                  <div className="text-sm text-heal-400 font-medium">{ROLES[myRole].skill}</div>
+                </div>
+              </div>
+
+              {/* Confirm button */}
+              <button
+                onClick={confirmRole}
+                className="w-full py-3.5 rounded-xl font-display text-base text-white
+                  bg-gradient-to-r from-heal-dark to-heal active:scale-[0.97]
+                  transition-transform shadow-lg shadow-heal/20"
+              >
+                确认身份
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Top Status Bar */}

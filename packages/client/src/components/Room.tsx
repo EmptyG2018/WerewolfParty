@@ -66,69 +66,58 @@ export function Room() {
             玩家 <span className="text-moon font-medium">{room.players.length}</span>
             <span className="text-moon-mist">/{room.config.maxPlayers}</span>
           </h3>
-          <div className="flex -space-x-2">
-            {room.players.map((p, i) => (
-              <div
-                key={p.id}
-                className="w-6 h-6 rounded-full bg-forest-50 border-2 border-forest flex items-center justify-center text-[10px] font-bold animate-fade-in"
-                style={{ animationDelay: `${i * 0.08}s`, zIndex: room.players.length - i }}
-              >
-                {p.name.charAt(0)}
-              </div>
-            ))}
-          </div>
         </div>
 
-        <div className="space-y-2 stagger-children">
+        <div className="grid grid-cols-2 gap-2 stagger-children">
           {room.players.map((player) => (
             <div
               key={player.id}
-              className={`animate-slide-up flex items-center gap-4 p-4 rounded-2xl transition-all ${
+              className={`animate-slide-up flex items-center gap-3 p-3 rounded-xl transition-all ${
                 player.id === myId
                   ? 'glass border-blood/20 bg-blood/5'
                   : 'glass'
               }`}
             >
-              <div className={`relative w-11 h-11 rounded-full flex items-center justify-center text-lg font-bold shrink-0 ${
+              <div className={`relative w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
                 player.id === myId
                   ? 'bg-gradient-to-br from-blood-600 to-blood-800 text-white'
                   : 'bg-gradient-to-br from-forest-50 to-forest-100 text-moon-dim'
               }`}>
                 {player.name.charAt(0)}
                 {player.id === room.hostId && (
-                  <div className="absolute -top-1 -right-1 w-4 h-4 bg-gold rounded-full flex items-center justify-center text-[8px] shadow-lg">
+                  <div className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-gold rounded-full flex items-center justify-center text-[7px] shadow-lg">
                     👑
                   </div>
                 )}
               </div>
 
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-body font-medium truncate">{player.name}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-body text-sm font-medium truncate">{player.name}</span>
                   {player.id === myId && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-blood/20 text-blood-400 tracking-wider">
+                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blood/20 text-blood-400 tracking-wider shrink-0">
                       我
                     </span>
                   )}
                 </div>
                 {player.id === room.hostId && (
-                  <span className="text-[10px] text-gold tracking-wider">房主</span>
+                  <span className="text-[9px] text-gold tracking-wider">房主</span>
                 )}
               </div>
 
-              <div className="w-2 h-2 rounded-full bg-heal animate-breathe" />
+              <div className="w-1.5 h-1.5 rounded-full bg-heal animate-breathe shrink-0" />
             </div>
           ))}
 
           {Array.from({ length: Math.max(0, room.config.maxPlayers - room.players.length) }).map((_, i) => (
             <div
               key={`empty-${i}`}
-              className="flex items-center gap-4 p-4 rounded-2xl border border-dashed border-white/[0.04] opacity-40"
+              className="flex items-center gap-3 p-3 rounded-xl border border-dashed border-white/[0.04] opacity-40"
             >
-              <div className="w-11 h-11 rounded-full bg-forest-50/50 flex items-center justify-center text-moon-mist">
+              <div className="w-9 h-9 rounded-full bg-forest-50/50 flex items-center justify-center text-moon-mist text-sm">
                 ?
               </div>
-              <span className="text-moon-mist text-sm">等待加入...</span>
+              <span className="text-moon-mist text-xs">等待加入...</span>
             </div>
           ))}
         </div>

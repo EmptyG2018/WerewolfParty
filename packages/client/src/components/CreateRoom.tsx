@@ -133,7 +133,7 @@ export function CreateRoom() {
                       selectedPreset === preset.id ? 'bg-blood/15 border border-blood/30 ring-1 ring-blood/20' : 'glass hover:bg-white/[0.06]'
                     }`}>
                     <div className="font-display text-xl text-moon">{preset.name}</div>
-                    <div className="text-[10px] text-moon-mist mt-1">{preset.playerCount}人 · {preset.wolfCount}狼</div>
+                    <div className="text-[10px] text-moon-mist mt-1">{preset.playerCount}人 · {preset.wolfCount + (preset.roles.includes(Role.WOLF_KING) ? 1 : 0)}狼</div>
                     {selectedPreset === preset.id && <div className="absolute top-3 right-3 w-2 h-2 rounded-full bg-blood animate-breathe" />}
                   </button>
                 ))}

@@ -109,6 +109,7 @@ export const ROLE_PRESETS: RolePreset[] = [
 // 游戏阶段
 export enum GamePhase {
   WAITING = 'waiting',
+  ROLE_CONFIRM = 'role_confirm',
   NIGHT_WEREWOLF = 'night_werewolf',
   NIGHT_SEER = 'night_seer',
   NIGHT_WITCH = 'night_witch',
@@ -212,6 +213,7 @@ export interface ClientToServerEvents {
   'room:leave': () => void;
   'room:updateConfig': (data: Partial<RoomConfig>) => void;
   'room:start': () => void;
+  'game:confirmRole': () => void;
   'game:werewolfKill': (data: { targetId: string }) => void;
   'game:seerCheck': (data: { targetId: string }) => void;
   'game:witchSave': () => void;

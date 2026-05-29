@@ -15,6 +15,7 @@ export class GameManager {
   private gameStates: Map<string, GameState> = new Map();
   private phaseTimers: Map<string, NodeJS.Timeout> = new Map();
   private nightActions: Map<string, Map<Role, { targetId: string }>> = new Map();
+  private roleConfirmations: Map<string, Set<string>> = new Map(); // roomId -> confirmed player IDs
 
   constructor(roomManager: RoomManager, io: TypedServer) {
     this.roomManager = roomManager;
@@ -63,17 +64,16 @@ export class GameManager {
     room.status = 'playing';
     this.gameStates.set(room.id, gameState);
     this.nightActions.set(room.id, new Map());
+    this.roleConfirmations.set(room.id, new Set());
 
-    // 通知所有玩家游戏开始
+    // 通知所有玩家游戏开始（身份确认阶段）
+    gameState.phase = GamePhase.ROLE_CONFIRM;
     room.players.forEach(player => {
       const playerSocket = this.io.sockets.sockets.get(player.id);
       if (playerSocket) {
         playerSocket.emit('game:started', { gameState, myRole: player.role! });
       }
     });
-
-    // 开始夜晚阶段
-    this.startNightPhase(room.id);
   }
 
   private assignRoles(room: Room): void {
@@ -494,6 +494,25 @@ export class GameManager {
     // 所有人都发言完毕，进入投票
     if (gameState.speaking.currentIndex >= gameState.speaking.order.length) {
       this.startVotePhase(room.id);
+    }
+  }
+
+  confirmRole(socket: TypedSocket): void {
+    const room = this.roomManager.getRoomBySocket(socket);
+    if (!room) return;
+
+    const gameState = this.gameStates.get(room.id);
+    if (!gameState || gameState.phase !== GamePhase.ROLE_CONFIRM) return;
+
+    const confirmed = this.roleConfirmations.get(room.id);
+    if (!confirmed) return;
+
+    confirmed.add(socket.id);
+
+    // 所有玩家确认完毕，进入夜晚
+    if (confirmed.size >= room.players.length) {
+      this.roleConfirmations.delete(room.id);
+      this.startNightPhase(room.id);
     }
   }
 

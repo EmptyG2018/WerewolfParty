@@ -55,6 +55,7 @@ interface GameStore {
   updateConfig: (config: Partial<import('@werewolf/shared').RoomConfig>) => void;
 
   // 游戏操作
+  confirmRole: () => void;
   werewolfKill: (targetId: string) => void;
   seerCheck: (targetId: string) => void;
   witchSave: () => void;
@@ -216,6 +217,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   updateConfig: (config) => {
     socket.emit('room:updateConfig', config);
+  },
+
+  confirmRole: () => {
+    socket.emit('game:confirmRole');
   },
 
   werewolfKill: (targetId) => {
