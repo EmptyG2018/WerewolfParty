@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { Role, ROLES, ROLE_PRESETS, RoomConfig, DEFAULT_ROOM_CONFIG, MIN_PLAYERS, MAX_PLAYERS } from '@werewolf/shared';
+import { Role, ROLES, ROLE_PRESETS, RoomConfig, DEFAULT_ROOM_CONFIG, MIN_PLAYERS, MAX_PLAYERS, getCampCounts as calcCampCounts } from '@werewolf/shared';
 
 const GOD_ROLES = [Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD];
 const WOLF_EXTRAS = [Role.WOLF_KING];
@@ -11,6 +11,11 @@ interface CustomConfig {
   wolfCount: number;
   enabledExtras: Set<Role>;   // 狼王 + 神职
   hybridRoles: Set<Role>;
+}
+
+function toRoomConfig(custom: CustomConfig): RoomConfig {
+  const roles: Role[] = [Role.WEREWOLF, ...custom.enabledExtras];
+  return { maxPlayers: custom.maxPlayers, roles, wolfCount: custom.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, hybridRoles: [...custom.hybridRoles] };
 }
 
 export function CreateRoom() {
@@ -26,44 +31,24 @@ export function CreateRoom() {
   });
 
   // --- Derived ---
-  const getCampCounts = (cfg: { maxPlayers: number; wolfCount: number; extras: Set<Role> }) => {
-    const wolfKing = cfg.extras.has(Role.WOLF_KING) ? 1 : 0;
-    const godCount = [...cfg.extras].filter(r => GOD_ROLES.includes(r)).length;
-    const wolfTotal = cfg.wolfCount + wolfKing;
-    const villagerCount = cfg.maxPlayers - wolfTotal - godCount;
-    return { wolfTotal, wolfKing, godCount, villagerCount };
-  };
-
-  const currentCounts = mode === 'preset'
-    ? (() => {
-        const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!;
-        const extras = new Set(p.roles.filter(r => r !== Role.WEREWOLF));
-        return getCampCounts({ maxPlayers: p.playerCount, wolfCount: p.wolfCount, extras });
-      })()
-    : getCampCounts({ maxPlayers: custom.maxPlayers, wolfCount: custom.wolfCount, extras: custom.enabledExtras });
+  const currentConfig = mode === 'preset'
+    ? (() => { const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!; return { maxPlayers: p.playerCount, roles: p.roles, wolfCount: p.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, hybridRoles: p.hybridRoles }; })()
+    : toRoomConfig(custom);
+  const currentCounts = calcCampCounts(currentConfig);
 
   // --- Validation ---
   const getValidation = () => {
     if (mode === 'preset') return { valid: true, message: '' };
     if (custom.wolfCount < 1) return { valid: false, message: '至少需要1名狼人' };
-    const wolfKing = custom.enabledExtras.has(Role.WOLF_KING) ? 1 : 0;
-    const totalWolves = custom.wolfCount + wolfKing;
     const maxWolves = Math.floor((custom.maxPlayers - 1) / 2);
-    if (totalWolves > maxWolves) return { valid: false, message: `狼人总数不能超过${maxWolves}` };
-    if (currentCounts.villagerCount < 1) return { valid: false, message: '至少需要1名平民' };
+    if (currentCounts.wolves > maxWolves) return { valid: false, message: `狼人总数不能超过${maxWolves}` };
+    if (currentCounts.villagers < 1) return { valid: false, message: '至少需要1名平民' };
     return { valid: true, message: '' };
   };
   const validation = getValidation();
 
   // --- Build config ---
-  const buildConfig = (): RoomConfig => {
-    if (mode === 'preset') {
-      const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!;
-      return { maxPlayers: p.playerCount, roles: p.roles, wolfCount: p.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, hybridRoles: p.hybridRoles };
-    }
-    const roles: Role[] = [Role.WEREWOLF, ...custom.enabledExtras];
-    return { maxPlayers: custom.maxPlayers, roles, wolfCount: custom.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, hybridRoles: [...custom.hybridRoles] };
-  };
+  const buildConfig = (): RoomConfig => currentConfig;
 
   // --- Handlers ---
   const handleBack = () => { setPendingName(null); setCurrentView('home'); };
@@ -89,8 +74,6 @@ export function CreateRoom() {
 
   const adjustWolf = (d: number) => setCustom(prev => ({ ...prev, wolfCount: Math.max(1, prev.wolfCount + d) }));
   const adjustPlayers = (d: number) => setCustom(prev => ({ ...prev, maxPlayers: Math.max(MIN_PLAYERS, Math.min(MAX_PLAYERS, prev.maxPlayers + d)) }));
-
-  const getRoleName = (role: Role) => ROLES[role]?.name || role;
 
   return (
     <div className="flex flex-col min-h-dvh relative">
@@ -151,7 +134,7 @@ export function CreateRoom() {
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-sm">🐺</span>
                       <span className="text-xs text-blood-400 tracking-wider uppercase">狼人阵营</span>
-                      <span className="ml-auto font-display text-lg text-blood-400">{currentCounts.wolfTotal}</span>
+                      <span className="ml-auto font-display text-lg text-blood-400">{currentCounts.wolves}</span>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {Array.from({ length: p.wolfCount }).map((_, i) => (
@@ -170,12 +153,12 @@ export function CreateRoom() {
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-sm">🔮</span>
                       <span className="text-xs text-poison tracking-wider uppercase">神职阵营</span>
-                      <span className="ml-auto font-display text-lg text-poison">{currentCounts.godCount}</span>
+                      <span className="ml-auto font-display text-lg text-poison">{currentCounts.gods}</span>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {godRoles.map(role => (
                         <span key={role} className="text-xs px-2.5 py-1 rounded-lg bg-poison/10 text-poison">
-                          {getRoleEmoji(role)} {getRoleName(role)}
+                          {getRoleEmoji(role)} {ROLES[role]?.name || role}
                         </span>
                       ))}
                     </div>
@@ -188,10 +171,10 @@ export function CreateRoom() {
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-sm">👤</span>
                       <span className="text-xs text-heal tracking-wider uppercase">平民阵营</span>
-                      <span className="ml-auto font-display text-lg text-heal">{currentCounts.villagerCount}</span>
+                      <span className="ml-auto font-display text-lg text-heal">{currentCounts.villagers}</span>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {Array.from({ length: currentCounts.villagerCount }).map((_, i) => (
+                      {Array.from({ length: currentCounts.villagers }).map((_, i) => (
                         <span key={`v${i}`} className="text-xs px-2.5 py-1 rounded-lg bg-heal/10 text-heal">村民</span>
                       ))}
                     </div>
@@ -224,7 +207,7 @@ export function CreateRoom() {
             <div className="animate-slide-up" style={{ animationDelay: '0.05s' }}>
               <p className="text-xs text-blood-400 tracking-wider uppercase mb-3 flex items-center gap-2">
                 <span>🐺</span> 狼人阵营
-                <span className="ml-auto font-display text-base text-blood-400">{currentCounts.wolfTotal}</span>
+                <span className="ml-auto font-display text-base text-blood-400">{currentCounts.wolves}</span>
               </p>
               <div className="space-y-2.5">
                 {/* Wolf count */}
@@ -249,7 +232,7 @@ export function CreateRoom() {
                         {getRoleEmoji(role)}
                       </div>
                       <div className="text-left flex-1">
-                        <div className={`text-sm font-body ${enabled ? 'text-blood-400' : 'text-moon-dim'}`}>{getRoleName(role)}</div>
+                        <div className={`text-sm font-body ${enabled ? 'text-blood-400' : 'text-moon-dim'}`}>{ROLES[role]?.name || role}</div>
                         <div className="text-[10px] text-moon-mist">{ROLES[role].skill}</div>
                       </div>
                       <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${enabled ? 'border-blood bg-blood text-white' : 'border-white/20'}`}>
@@ -265,7 +248,7 @@ export function CreateRoom() {
             <div className="animate-slide-up" style={{ animationDelay: '0.1s' }}>
               <p className="text-xs text-poison tracking-wider uppercase mb-3 flex items-center gap-2">
                 <span>🔮</span> 神职阵营
-                <span className="ml-auto font-display text-base text-poison">{currentCounts.godCount}</span>
+                <span className="ml-auto font-display text-base text-poison">{currentCounts.gods}</span>
               </p>
               <div className="grid grid-cols-2 gap-2.5">
                 {GOD_ROLES.map(role => {
@@ -280,7 +263,7 @@ export function CreateRoom() {
                           {getRoleEmoji(role)}
                         </div>
                         <div className="text-left">
-                          <div className={`text-sm font-body ${enabled ? 'text-poison' : 'text-moon-dim'}`}>{getRoleName(role)}</div>
+                          <div className={`text-sm font-body ${enabled ? 'text-poison' : 'text-moon-dim'}`}>{ROLES[role]?.name || role}</div>
                           <div className="text-[10px] text-moon-mist">{ROLES[role].skill}</div>
                         </div>
                         <div className={`ml-auto w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${enabled ? 'border-poison bg-poison text-white' : 'border-white/20'}`}>
@@ -303,7 +286,7 @@ export function CreateRoom() {
             <div className="animate-slide-up" style={{ animationDelay: '0.15s' }}>
               <p className="text-xs text-heal tracking-wider uppercase mb-3 flex items-center gap-2">
                 <span>👤</span> 平民阵营
-                <span className="ml-auto font-display text-base text-heal">{currentCounts.villagerCount}</span>
+                <span className="ml-auto font-display text-base text-heal">{currentCounts.villagers}</span>
               </p>
               <div className="glass rounded-2xl p-4">
                 <div className="flex items-center justify-between">
@@ -314,8 +297,8 @@ export function CreateRoom() {
                       <div className="text-[10px] text-moon-mist">自动填充</div>
                     </div>
                   </div>
-                  <div className={`font-display text-2xl ${currentCounts.villagerCount < 1 ? 'text-blood-400' : 'text-heal'}`}>
-                    {currentCounts.villagerCount}
+                  <div className={`font-display text-2xl ${currentCounts.villagers < 1 ? 'text-blood-400' : 'text-heal'}`}>
+                    {currentCounts.villagers}
                   </div>
                 </div>
               </div>

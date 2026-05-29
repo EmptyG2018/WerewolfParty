@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { Role, ROLES, MIN_PLAYERS } from '@werewolf/shared';
+import { Role, ROLES, MIN_PLAYERS, getCampCounts, getRoleCounts } from '@werewolf/shared';
 
 export function Room() {
   const { room, myId, startGame, leaveRoom, error } = useGameStore();
@@ -17,30 +17,9 @@ export function Room() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const getRoleName = (role: Role) => {
-    return ROLES[role]?.name || role;
-  };
-
+  const { wolves, gods, villagers } = getCampCounts(room.config);
+  const roleCounts = getRoleCounts(room.config);
   const hasWolfKing = room.config.roles.includes(Role.WOLF_KING);
-  const totalWolfCount = room.config.wolfCount + (hasWolfKing ? 1 : 0);
-
-  const specialRoles = room.config.roles.filter(r => r !== Role.WEREWOLF && r !== Role.WOLF_KING && r !== Role.VILLAGER);
-  const villagerCount = room.config.maxPlayers - totalWolfCount - specialRoles.length;
-
-  const roleCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    room.config.roles.forEach(r => {
-      if (r === Role.WEREWOLF) {
-        counts[r] = room.config.wolfCount;
-      } else {
-        counts[r] = (counts[r] || 0) + 1;
-      }
-    });
-    if (villagerCount > 0) {
-      counts[Role.VILLAGER] = villagerCount;
-    }
-    return counts;
-  }, [room.config.roles, room.config.wolfCount, villagerCount]);
 
   return (
     <div className="flex flex-col min-h-dvh relative">
@@ -151,18 +130,18 @@ export function Room() {
           <div className="grid grid-cols-3 gap-2">
             <div className="bg-forest-50/50 rounded-xl p-3">
               <div className="text-moon-mist text-[10px] tracking-wider mb-1">狼人</div>
-              <div className="font-display text-xl text-blood-400">{totalWolfCount}</div>
+              <div className="font-display text-xl text-blood-400">{wolves}</div>
               {hasWolfKing && (
                 <div className="text-[10px] text-moon-mist mt-0.5">普狼×{room.config.wolfCount} 狼王×1</div>
               )}
             </div>
             <div className="bg-forest-50/50 rounded-xl p-3">
               <div className="text-moon-mist text-[10px] tracking-wider mb-1">神职</div>
-              <div className="font-display text-xl text-heal-400">{specialRoles.length}</div>
+              <div className="font-display text-xl text-heal-400">{gods}</div>
             </div>
             <div className="bg-forest-50/50 rounded-xl p-3">
               <div className="text-moon-mist text-[10px] tracking-wider mb-1">村民</div>
-              <div className="font-display text-xl text-moon">{villagerCount}</div>
+              <div className="font-display text-xl text-moon">{villagers}</div>
             </div>
           </div>
           <div className="mt-2 bg-forest-50/50 rounded-xl p-3">
@@ -170,7 +149,7 @@ export function Room() {
             <div className="flex flex-wrap gap-1.5 mt-1">
               {Object.entries(roleCounts).map(([role, count]) => (
                 <span key={role} className="text-xs px-2 py-0.5 rounded bg-white/[0.05] text-moon-dim">
-                  {getRoleName(role as Role)}{count > 1 ? `×${count}` : ''}
+                  {ROLES[role as Role]?.name || role}{count > 1 ? `×${count}` : ''}
                 </span>
               ))}
             </div>

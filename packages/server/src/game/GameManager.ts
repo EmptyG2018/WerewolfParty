@@ -1,7 +1,8 @@
 import { Server, Socket } from 'socket.io';
 import {
   Room, Player, Role, GamePhase, GameState, SpeakingState,
-  ClientToServerEvents, ServerToClientEvents, ROLES, MIN_PLAYERS
+  ClientToServerEvents, ServerToClientEvents, ROLES, MIN_PLAYERS,
+  isWolfRole, isGodRole
 } from '@werewolf/shared';
 import { RoomManager } from '../rooms/RoomManager';
 import { generateMessageId } from '../utils';
@@ -162,7 +163,7 @@ export class GameManager {
     if (!gameState || gameState.phase !== GamePhase.NIGHT_WEREWOLF) return;
 
     const player = room.players.find(p => p.id === socket.id);
-    if (!player || (player.role !== Role.WEREWOLF && player.role !== Role.WOLF_KING) || player.status === 'dead') return;
+    if (!player || !player.role || !isWolfRole(player.role) || player.status === 'dead') return;
 
     const target = room.players.find(p => p.id === targetId);
     if (!target || target.status === 'dead') return;
@@ -172,7 +173,7 @@ export class GameManager {
       nightActions.set(Role.WEREWOLF, { targetId });
     }
 
-    const wolves = room.players.filter(p => (p.role === Role.WEREWOLF || p.role === Role.WOLF_KING) && p.status === 'alive');
+    const wolves = room.players.filter(p => p.role !== null && isWolfRole(p.role) && p.status === 'alive');
     const wolvesActed = wolves.every(() => {
       const actions = this.nightActions.get(room.id);
       return actions?.has(Role.WEREWOLF);
@@ -708,17 +709,15 @@ export class GameManager {
     const hybridSet = new Set(room.config.hybridRoles || []);
     const alivePlayers = room.players.filter(p => p.status === 'alive');
 
-    const aliveWolves = alivePlayers.filter(p => p.role === Role.WEREWOLF || p.role === Role.WOLF_KING);
+    const aliveWolves = alivePlayers.filter(p => p.role !== null && isWolfRole(p.role));
     if (aliveWolves.length === 0) return 'villager';
 
-    const isGod = (p: Player) => p.role !== Role.WEREWOLF && p.role !== Role.WOLF_KING && p.role !== Role.VILLAGER;
-    const isVillager = (p: Player) => p.role === Role.VILLAGER;
     const isHybrid = (p: Player) => p.role !== null && hybridSet.has(p.role);
 
     // 神职存活数（含神民同体）
-    const aliveGods = alivePlayers.filter(p => isGod(p) || isHybrid(p));
+    const aliveGods = alivePlayers.filter(p => (p.role !== null && isGodRole(p.role)) || isHybrid(p));
     // 平民存活数（纯平民 + 神民同体）
-    const aliveVillagers = alivePlayers.filter(p => isVillager(p) || isHybrid(p));
+    const aliveVillagers = alivePlayers.filter(p => p.role === Role.VILLAGER || isHybrid(p));
 
     // 屠神：所有神职出局
     if (aliveGods.length === 0) return 'werewolf';
