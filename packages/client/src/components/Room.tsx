@@ -30,13 +30,17 @@ export function Room() {
   const roleCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     room.config.roles.forEach(r => {
-      counts[r] = (counts[r] || 0) + 1;
+      if (r === Role.WEREWOLF) {
+        counts[r] = room.config.wolfCount;
+      } else {
+        counts[r] = (counts[r] || 0) + 1;
+      }
     });
     if (villagerCount > 0) {
       counts[Role.VILLAGER] = villagerCount;
     }
     return counts;
-  }, [room.config.roles, villagerCount]);
+  }, [room.config.roles, room.config.wolfCount, villagerCount]);
 
   return (
     <div className="flex flex-col min-h-dvh relative">
