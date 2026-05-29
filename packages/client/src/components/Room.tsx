@@ -24,15 +24,19 @@ export function Room() {
   const hasWolfKing = room.config.roles.includes(Role.WOLF_KING);
   const totalWolfCount = room.config.wolfCount + (hasWolfKing ? 1 : 0);
 
+  const specialRoles = room.config.roles.filter(r => r !== Role.WEREWOLF && r !== Role.WOLF_KING && r !== Role.VILLAGER);
+  const villagerCount = room.config.maxPlayers - totalWolfCount - specialRoles.length;
+
   const roleCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     room.config.roles.forEach(r => {
       counts[r] = (counts[r] || 0) + 1;
     });
+    if (villagerCount > 0) {
+      counts[Role.VILLAGER] = villagerCount;
+    }
     return counts;
-  }, [room.config.roles]);
-
-  const specialRoles = room.config.roles.filter(r => r !== Role.WEREWOLF && r !== Role.WOLF_KING && r !== Role.VILLAGER);
+  }, [room.config.roles, villagerCount]);
 
   return (
     <div className="flex flex-col min-h-dvh relative">
@@ -154,7 +158,7 @@ export function Room() {
             </div>
             <div className="bg-forest-50/50 rounded-xl p-3">
               <div className="text-moon-mist text-[10px] tracking-wider mb-1">村民</div>
-              <div className="font-display text-xl text-moon">{room.config.maxPlayers - totalWolfCount - specialRoles.length}</div>
+              <div className="font-display text-xl text-moon">{villagerCount}</div>
             </div>
           </div>
           <div className="mt-2 bg-forest-50/50 rounded-xl p-3">
