@@ -23,6 +23,9 @@ const roomManager = new RoomManager();
 roomManager.setIO(io);
 const gameManager = new GameManager(roomManager, io);
 
+// 房间删除时清理游戏状态
+roomManager.setOnRoomDeleted((roomId) => gameManager.cleanup(roomId));
+
 // 健康检查接口
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', rooms: roomManager.getRoomCount() });

@@ -1,5 +1,5 @@
 import { Socket, Server } from 'socket.io';
-import { Room, Player, RoomConfig, DEFAULT_ROOM_CONFIG, ClientToServerEvents, ServerToClientEvents } from '@werewolf/shared';
+import { Room, Player, RoomConfig, DEFAULT_ROOM_CONFIG, validateConfig, ClientToServerEvents, ServerToClientEvents } from '@werewolf/shared';
 import { generateRoomId } from '../utils';
 
 type TypedSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
@@ -7,11 +7,17 @@ type TypedServer = Server<ClientToServerEvents, ServerToClientEvents>;
 
 export class RoomManager {
   private rooms: Map<string, Room> = new Map();
-  private playerRooms: Map<string, string> = new Map(); // socketId -> roomId
+  private playerRooms: Map<string, string> = new Map();
   private io: TypedServer | null = null;
+  private onRoomDeleted: ((roomId: string) => void) | null = null;
 
   setIO(io: TypedServer): void {
     this.io = io;
+  }
+
+  /** 注册房间删除回调（用于清理游戏状态） */
+  setOnRoomDeleted(callback: (roomId: string) => void): void {
+    this.onRoomDeleted = callback;
   }
 
   getRoomCount(): number {
@@ -41,11 +47,7 @@ export class RoomManager {
       status: 'alive',
       isHost: true,
       voteTarget: null,
-      skillUsed: {
-        witchSave: false,
-        witchPoison: false,
-        lastGuardTarget: null
-      }
+      skillUsed: { witchSave: false, witchPoison: false, lastGuardTarget: null }
     };
 
     const room: Room = {
@@ -72,17 +74,14 @@ export class RoomManager {
       socket.emit('room:error', { message: '房间不存在' });
       return;
     }
-
     if (room.status !== 'waiting') {
       socket.emit('room:error', { message: '游戏已经开始' });
       return;
     }
-
     if (room.players.length >= room.config.maxPlayers) {
       socket.emit('room:error', { message: '房间已满' });
       return;
     }
-
     if (room.players.some(p => p.name === playerName)) {
       socket.emit('room:error', { message: '昵称已被使用' });
       return;
@@ -96,11 +95,7 @@ export class RoomManager {
       status: 'alive',
       isHost: false,
       voteTarget: null,
-      skillUsed: {
-        witchSave: false,
-        witchPoison: false,
-        lastGuardTarget: null
-      }
+      skillUsed: { witchSave: false, witchPoison: false, lastGuardTarget: null }
     };
 
     room.players.push(player);
@@ -125,6 +120,7 @@ export class RoomManager {
 
     if (room.players.length === 0) {
       this.rooms.delete(roomId);
+      this.onRoomDeleted?.(roomId);
     } else if (room.hostId === socket.id) {
       room.hostId = room.players[0].id;
       room.players[0].isHost = true;
@@ -145,9 +141,14 @@ export class RoomManager {
       socket.emit('room:error', { message: '只有房主可以修改配置' });
       return;
     }
-
     if (room.status !== 'waiting') {
       socket.emit('room:error', { message: '游戏已经开始，无法修改配置' });
+      return;
+    }
+
+    const error = validateConfig({ ...room.config, ...config });
+    if (error) {
+      socket.emit('room:error', { message: error });
       return;
     }
 
