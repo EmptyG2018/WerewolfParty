@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Room, Player, GameState, Role, GamePhase, SpeakingState, SystemMessage } from '@werewolf/shared';
+import { Room, Player, GameState, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage } from '@werewolf/shared';
 import { socket } from '../lib/socket';
 
 type View = 'home' | 'create' | 'room' | 'game';
@@ -42,6 +42,10 @@ interface GameStore {
   error: string | null;
   setError: (error: string | null) => void;
 
+  // 座位交换
+  pendingSwapRequest: SeatSwapRequest | null;
+  setPendingSwapRequest: (req: SeatSwapRequest | null) => void;
+
   // 初始化socket监听
   initSocket: () => void;
 
@@ -53,6 +57,11 @@ interface GameStore {
 
   // 房间配置
   updateConfig: (config: Partial<import('@werewolf/shared').RoomConfig>) => void;
+
+  // 座位操作
+  swapSeat: (targetSeat: number) => void;
+  acceptSwap: () => void;
+  rejectSwap: () => void;
 
   // 游戏操作
   confirmRole: () => void;
@@ -78,6 +87,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   speaking: null,
   seerResult: null,
   error: null,
+  pendingSwapRequest: null,
 
   setCurrentView: (view) => set({ currentView: view }),
   setPendingName: (name) => set({ pendingName: name }),
@@ -88,6 +98,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setSpeaking: (speaking) => set({ speaking }),
   setSeerResult: (result) => set({ seerResult: result }),
   setError: (error) => set({ error }),
+  setPendingSwapRequest: (req) => set({ pendingSwapRequest: req }),
 
   initSocket: () => {
     socket.on('room:created', ({ roomId }) => {
@@ -118,6 +129,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const room = get().room;
       if (room) {
         set({ room: { ...room, players: room.players.filter(p => p.id !== playerId) } });
+      }
+    });
+
+    socket.on('room:swapRequest', (request) => {
+      set({ pendingSwapRequest: request });
+    });
+
+    socket.on('room:swapResult', ({ success, message }) => {
+      if (!success && message) {
+        set({ error: message });
+        setTimeout(() => set({ error: null }), 3000);
       }
     });
 
@@ -217,6 +239,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   updateConfig: (config) => {
     socket.emit('room:updateConfig', config);
+  },
+
+  swapSeat: (targetSeat) => {
+    socket.emit('room:swapSeat', { targetSeat });
+  },
+
+  acceptSwap: () => {
+    socket.emit('room:acceptSwap');
+    set({ pendingSwapRequest: null });
+  },
+
+  rejectSwap: () => {
+    socket.emit('room:rejectSwap');
+    set({ pendingSwapRequest: null });
   },
 
   confirmRole: () => {

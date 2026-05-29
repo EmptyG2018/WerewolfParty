@@ -19,6 +19,7 @@ export interface Player {
   id: string;
   name: string;
   roomId: string;
+  seatIndex: number;           // 座位号（0-based，显示时 +1）
   role: Role | null;
   status: 'alive' | 'dead';
   isHost: boolean;
@@ -28,6 +29,14 @@ export interface Player {
     witchPoison: boolean;
     lastGuardTarget: string | null;
   };
+}
+
+/** 座位交换请求 */
+export interface SeatSwapRequest {
+  fromId: string;              // 发起者 socketId
+  fromSeat: number;
+  targetSeat: number;
+  targetId: string | null;     // 目标玩家 socketId，null 表示空座
 }
 
 export interface NightAction {

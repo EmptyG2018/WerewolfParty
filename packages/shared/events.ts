@@ -1,5 +1,5 @@
 import { Role } from './roles';
-import { GamePhase, GameState, Player, SpeakingState, SystemMessage } from './game';
+import { GamePhase, GameState, Player, SeatSwapRequest, SpeakingState, SystemMessage } from './game';
 import { Room, RoomConfig } from './room';
 
 export interface ClientToServerEvents {
@@ -8,6 +8,9 @@ export interface ClientToServerEvents {
   'room:leave': () => void;
   'room:updateConfig': (data: Partial<RoomConfig>) => void;
   'room:start': () => void;
+  'room:swapSeat': (data: { targetSeat: number }) => void;
+  'room:acceptSwap': () => void;
+  'room:rejectSwap': () => void;
   'game:confirmRole': () => void;
   'game:werewolfKill': (data: { targetId: string }) => void;
   'game:seerCheck': (data: { targetId: string }) => void;
@@ -27,6 +30,8 @@ export interface ServerToClientEvents {
   'room:error': (data: { message: string }) => void;
   'room:playerJoined': (data: { player: Player }) => void;
   'room:playerLeft': (data: { playerId: string }) => void;
+  'room:swapRequest': (data: SeatSwapRequest) => void;
+  'room:swapResult': (data: { success: boolean; message?: string }) => void;
   'game:started': (data: { gameState: GameState; myRole: Role }) => void;
   'game:phaseChanged': (data: { phase: GamePhase; timer: number; speaking?: SpeakingState }) => void;
   'game:speakingUpdate': (data: { speaking: SpeakingState }) => void;

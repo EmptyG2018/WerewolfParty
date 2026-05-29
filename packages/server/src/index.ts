@@ -56,6 +56,18 @@ io.on('connection', (socket) => {
     roomManager.updateConfig(socket, data);
   });
 
+  socket.on('room:swapSeat', (data) => {
+    roomManager.swapSeat(socket, data.targetSeat);
+  });
+
+  socket.on('room:acceptSwap', () => {
+    roomManager.acceptSwap(socket);
+  });
+
+  socket.on('room:rejectSwap', () => {
+    roomManager.rejectSwap(socket);
+  });
+
   socket.on('room:start', () => {
     gameManager.startGame(socket);
   });
