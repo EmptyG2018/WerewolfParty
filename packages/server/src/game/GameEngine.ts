@@ -1,6 +1,6 @@
 import {
-  Room, Player, Role, GamePhase, GameState, SpeakingState,
-  ROLES, isWolfRole, isGodRole
+  Room, Player, Role, GamePhase, GameState,
+  RoleAbility, isWolfRole, isGodRole, isVillagerRole, roleHasAbility
 } from '@werewolf/shared';
 
 export interface NightResolution {
@@ -50,9 +50,11 @@ export class GameEngine {
   /** 根据房间配置获取夜晚阶段顺序 */
   getNightPhases(room: Room): GamePhase[] {
     const phases: GamePhase[] = [GamePhase.NIGHT_WEREWOLF];
-    if (room.config.roles.includes(Role.SEER)) phases.push(GamePhase.NIGHT_SEER);
-    if (room.config.roles.includes(Role.GUARD)) phases.push(GamePhase.NIGHT_GUARD);
-    if (room.config.roles.includes(Role.WITCH)) phases.push(GamePhase.NIGHT_WITCH);
+    if (room.config.roles.some(role => roleHasAbility(role, RoleAbility.SEER_CHECK))) phases.push(GamePhase.NIGHT_SEER);
+    if (room.config.roles.some(role => roleHasAbility(role, RoleAbility.GUARD_PROTECT))) phases.push(GamePhase.NIGHT_GUARD);
+    if (room.config.roles.some(role => roleHasAbility(role, RoleAbility.WITCH_SAVE) || roleHasAbility(role, RoleAbility.WITCH_POISON))) {
+      phases.push(GamePhase.NIGHT_WITCH);
+    }
     return phases;
   }
 
@@ -60,7 +62,8 @@ export class GameEngine {
   resolveNight(
     room: Room,
     gameState: GameState,
-    nightActions: Map<Role, { targetId: string }>
+    nightActions: Map<Role, { targetId: string }>,
+    witchSavedThisNight = false
   ): NightResolution {
     let killedPlayerId = nightActions.get(Role.WEREWOLF)?.targetId ?? null;
     const poisonedPlayerId = nightActions.get(Role.WITCH)?.targetId ?? null;
@@ -72,26 +75,25 @@ export class GameEngine {
     }
 
     // 女巫解药
-    if (gameState.witchSaveUsed && killedPlayerId) {
+    if (witchSavedThisNight && killedPlayerId) {
       killedPlayerId = null;
-      gameState.witchSaveUsed = false;
     }
 
-    const deadPlayerIds: string[] = [];
+    const deadPlayerIds = new Set<string>();
     let wolfKingCanShoot = false;
 
     if (killedPlayerId) {
-      deadPlayerIds.push(killedPlayerId);
+      deadPlayerIds.add(killedPlayerId);
       const killedPlayer = room.players.find(p => p.id === killedPlayerId);
-      if (killedPlayer?.role === Role.WOLF_KING) {
+      if (killedPlayer?.role && roleHasAbility(killedPlayer.role, RoleAbility.WOLF_KING_SHOOT)) {
         wolfKingCanShoot = true;
       }
     }
     if (poisonedPlayerId) {
-      deadPlayerIds.push(poisonedPlayerId);
+      deadPlayerIds.add(poisonedPlayerId);
     }
 
-    return { killedPlayerId, poisonedPlayerId, deadPlayerIds, wolfKingCanShoot };
+    return { killedPlayerId, poisonedPlayerId, deadPlayerIds: [...deadPlayerIds], wolfKingCanShoot };
   }
 
   /** 解析投票结果（纯逻辑） */
@@ -128,7 +130,7 @@ export class GameEngine {
     reason: 'killed' | 'voted' | 'poisoned' | 'shot'
   ): Player | null {
     const player = room.players.find(p => p.id === playerId);
-    if (!player) return null;
+    if (!player || player.status === 'dead') return null;
 
     player.status = 'dead';
     gameState.deadPlayers.push({ playerId, reason, day: gameState.day });
@@ -137,15 +139,14 @@ export class GameEngine {
 
   /** 胜负判定 */
   checkWinner(room: Room): 'villager' | 'werewolf' | null {
-    const hybridSet = new Set(room.config.hybridRoles || []);
     const alivePlayers = room.players.filter(p => p.status === 'alive');
+    const hybridRoles = room.config.hybridRoles || [];
 
-    const aliveWolves = alivePlayers.filter(p => p.role !== null && isWolfRole(p.role));
+    const aliveWolves = alivePlayers.filter(p => p.role !== null && isWolfRole(p.role, hybridRoles));
     if (aliveWolves.length === 0) return 'villager';
 
-    const isHybrid = (p: Player) => p.role !== null && hybridSet.has(p.role);
-    const aliveGods = alivePlayers.filter(p => (p.role !== null && isGodRole(p.role)) || isHybrid(p));
-    const aliveVillagers = alivePlayers.filter(p => p.role === Role.VILLAGER || isHybrid(p));
+    const aliveGods = alivePlayers.filter(p => p.role !== null && isGodRole(p.role, hybridRoles));
+    const aliveVillagers = alivePlayers.filter(p => p.role !== null && isVillagerRole(p.role, hybridRoles));
 
     if (aliveGods.length === 0) return 'werewolf';
     if (aliveVillagers.length === 0) return 'werewolf';
@@ -190,6 +191,10 @@ export class GameEngine {
       deadPlayers: [],
       systemMessages: [],
       phaseTimer: 0,
+      phaseEndsAt: null,
+      paused: false,
+      pausedAt: null,
+      remainingMs: null,
       winner: null,
       votes: {},
       seerCheckResult: null,

@@ -3,6 +3,19 @@ import { Room, GameState, Role, GamePhase, SeatSwapRequest, SpeakingState, Syste
 import { socket } from '../lib/socket';
 
 type View = 'home' | 'create' | 'room' | 'game';
+const SESSION_STORAGE_KEY = 'werewolf.sessionId';
+let socketInitialized = false;
+
+export interface DeathEvent {
+  playerId: string;
+  reason: 'killed' | 'voted' | 'poisoned' | 'shot';
+  day: number;
+}
+
+export interface VoteResultState {
+  votes: Record<string, number>;
+  eliminated: string | null;
+}
 
 interface GameStore {
   // 视图状态
@@ -19,6 +32,7 @@ interface GameStore {
 
   // 玩家信息
   myId: string | null;
+  sessionId: string | null;
   myRole: Role | null;
   setMyRole: (role: Role | null) => void;
 
@@ -53,6 +67,10 @@ interface GameStore {
   // 狼人投票
   wolfVotes: Record<string, string>;      // wolfId → targetId (已确认)
   wolfSelections: Record<string, string>; // wolfId → targetId (仅选择)
+  wolfTeam: string[];
+
+  deathEvents: DeathEvent[];
+  voteResult: VoteResultState | null;
 
   // 初始化socket监听
   initSocket: () => void;
@@ -73,6 +91,8 @@ interface GameStore {
 
   // 游戏操作
   confirmRole: () => void;
+  pauseGame: () => void;
+  resumeGame: () => void;
   werewolfKill: (targetId: string) => void;
   wolfConfirmVote: () => void;
   seerCheck: (targetId: string) => void;
@@ -90,6 +110,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   room: null,
   pendingName: null,
   myId: null,
+  sessionId: null,
   myRole: null,
   gameState: null,
   systemMessages: [],
@@ -101,6 +122,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   confirmedPlayers: [],
   wolfVotes: {},
   wolfSelections: {},
+  wolfTeam: [],
+  deathEvents: [],
+  voteResult: null,
 
   setCurrentView: (view) => set({ currentView: view }),
   setPendingName: (name) => set({ pendingName: name }),
@@ -114,12 +138,44 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setPendingSwapRequest: (req) => set({ pendingSwapRequest: req }),
 
   initSocket: () => {
+    if (socketInitialized) return;
+    socketInitialized = true;
+
+    socket.on('connect', () => {
+      const sessionId = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (sessionId) {
+        socket.emit('room:reconnect', { sessionId });
+      }
+    });
+    if (socket.connected) {
+      const sessionId = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (sessionId) {
+        socket.emit('room:reconnect', { sessionId });
+      }
+    }
+
     socket.on('room:created', ({ roomId }) => {
       console.log('Room created:', roomId);
     });
 
-    socket.on('room:joined', ({ room }) => {
-      set({ room, currentView: 'room', myId: socket.id });
+    socket.on('room:joined', ({ room, sessionId, playerId }) => {
+      localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+      set({ room, currentView: 'room', myId: playerId, sessionId });
+    });
+
+    socket.on('room:reconnected', ({ room, sessionId, playerId }) => {
+      localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+      set({
+        room,
+        currentView: room.status === 'playing' ? 'game' : 'room',
+        myId: playerId,
+        sessionId
+      });
+    });
+
+    socket.on('room:reconnectFailed', () => {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      set({ sessionId: null });
     });
 
     socket.on('room:updated', ({ room }) => {
@@ -156,7 +212,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     });
 
-    socket.on('game:started', ({ gameState, myRole }) => {
+    socket.on('game:started', ({ gameState, myRole, wolfTeam }) => {
       set({
         gameState,
         myRole,
@@ -166,14 +222,29 @@ export const useGameStore = create<GameStore>((set, get) => ({
         roleConfirmed: false,
         confirmedPlayers: [],
         wolfVotes: {},
-        wolfSelections: {}
+        wolfSelections: {},
+        wolfTeam: wolfTeam || [],
+        deathEvents: gameState.deadPlayers.map(dead => ({
+          playerId: dead.playerId,
+          reason: dead.reason,
+          day: dead.day
+        })),
+        voteResult: null
       });
     });
 
-    socket.on('game:phaseChanged', ({ phase, timer, speaking }) => {
+    socket.on('game:phaseChanged', ({ phase, timer, endsAt, speaking }) => {
       const gameState = get().gameState;
       if (gameState) {
-        const update: Partial<GameState> = { phase, phaseTimer: timer };
+        const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
+        const update: Partial<GameState> = {
+          phase,
+          phaseTimer,
+          phaseEndsAt: endsAt,
+          paused: false,
+          pausedAt: null,
+          remainingMs: null
+        };
         if (speaking !== undefined) {
           update.speaking = speaking;
           set({ speaking });
@@ -181,11 +252,47 @@ export const useGameStore = create<GameStore>((set, get) => ({
         set({ gameState: { ...gameState, ...update } });
         // 新阶段重置狼人投票和确认状态
         if (phase === GamePhase.NIGHT_WEREWOLF) {
-          set({ wolfVotes: {}, wolfSelections: {} });
+          set({ wolfVotes: {}, wolfSelections: {}, voteResult: null });
         }
         if (phase !== GamePhase.ROLE_CONFIRM) {
           set({ roleConfirmed: false, confirmedPlayers: [] });
         }
+      }
+    });
+
+    socket.on('game:paused', ({ remainingMs }) => {
+      const gameState = get().gameState;
+      if (gameState) {
+        set({
+          gameState: {
+            ...gameState,
+            paused: true,
+            pausedAt: Date.now(),
+            remainingMs,
+            phaseEndsAt: null,
+            phaseTimer: remainingMs !== null ? Math.ceil(remainingMs / 1000) : 0
+          }
+        });
+      }
+    });
+
+    socket.on('game:resumed', ({ phase, timer, endsAt, speaking }) => {
+      const gameState = get().gameState;
+      if (gameState) {
+        const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
+        const update: Partial<GameState> = {
+          phase,
+          phaseTimer,
+          phaseEndsAt: endsAt,
+          paused: false,
+          pausedAt: null,
+          remainingMs: null
+        };
+        if (speaking !== undefined) {
+          update.speaking = speaking;
+          set({ speaking });
+        }
+        set({ gameState: { ...gameState, ...update } });
       }
     });
 
@@ -197,7 +304,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     });
 
-    socket.on('game:playerDead', ({ playerId }) => {
+    socket.on('game:playerDead', ({ playerId, reason, day }) => {
       const room = get().room;
       if (room) {
         set({
@@ -208,6 +315,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
             )
           }
         });
+      }
+      const deathEvents = get().deathEvents;
+      if (!deathEvents.some(event => event.playerId === playerId && event.reason === reason && event.day === day)) {
+        set({ deathEvents: [...deathEvents, { playerId, reason, day }] });
       }
     });
 
@@ -221,12 +332,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     socket.on('game:voteResult', ({ votes, eliminated }) => {
       console.log('Vote result:', votes, eliminated);
+      set({ voteResult: { votes, eliminated } });
     });
 
-    socket.on('game:over', ({ winner }) => {
+    socket.on('game:over', ({ winner, players }) => {
       const gameState = get().gameState;
       if (gameState) {
         set({ gameState: { ...gameState, winner, phase: GamePhase.GAME_OVER } });
+      }
+      const room = get().room;
+      if (room) {
+        set({ room: { ...room, players } });
       }
     });
 
@@ -237,10 +353,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     socket.on('game:hunterRequired', ({ playerId }) => {
       console.log('Hunter required:', playerId);
+      const gameState = get().gameState;
+      if (gameState) {
+        set({ gameState: { ...gameState, phase: GamePhase.HUNTER_SHOOT } });
+      }
     });
 
     socket.on('game:wolfKingRequired', ({ playerId }) => {
       console.log('Wolf king required:', playerId);
+      const gameState = get().gameState;
+      if (gameState) {
+        set({ gameState: { ...gameState, phase: GamePhase.WOLF_KING_SHOOT } });
+      }
     });
 
     socket.on('game:roleConfirmed', ({ playerId }) => {
@@ -248,7 +372,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       if (!confirmed.includes(playerId)) {
         set({ confirmedPlayers: [...confirmed, playerId] });
       }
-      if (playerId === socket.id) {
+      if (playerId === get().myId) {
         set({ roleConfirmed: true });
       }
     });
@@ -272,7 +396,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   leaveRoom: () => {
     socket.emit('room:leave');
-    set({ room: null, currentView: 'home' });
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    set({
+      room: null,
+      currentView: 'home',
+      myId: null,
+      sessionId: null,
+      myRole: null,
+      gameState: null,
+      deathEvents: [],
+      voteResult: null
+    });
   },
 
   startGame: () => {
@@ -299,6 +433,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   confirmRole: () => {
     socket.emit('game:confirmRole');
+  },
+
+  pauseGame: () => {
+    socket.emit('game:pause');
+  },
+
+  resumeGame: () => {
+    socket.emit('game:resume');
   },
 
   werewolfKill: (targetId) => {

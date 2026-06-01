@@ -3,6 +3,7 @@ import { Home } from './components/Home';
 import { CreateRoom } from './components/CreateRoom';
 import { Room } from './components/Room';
 import { Game } from './components/Game';
+import { DebugPanel } from './debug/DebugPanel';
 
 function App() {
   const { currentView } = useGameStore();
@@ -13,6 +14,7 @@ function App() {
       {currentView === 'create' && <CreateRoom />}
       {currentView === 'room' && <Room />}
       {currentView === 'game' && <Game />}
+      <DebugPanel />
     </div>
   );
 }

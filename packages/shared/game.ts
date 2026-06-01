@@ -17,11 +17,13 @@ export enum GamePhase {
 
 export interface Player {
   id: string;
+  sessionId: string;
   name: string;
   roomId: string;
   seatIndex: number;           // 座位号（0-based，显示时 +1）
   role: Role | null;
   status: 'alive' | 'dead';
+  online: boolean;
   isHost: boolean;
   voteTarget: string | null;
   skillUsed: {
@@ -72,6 +74,10 @@ export interface GameState {
   deadPlayers: DeadPlayer[];
   systemMessages: SystemMessage[];
   phaseTimer: number;
+  phaseEndsAt: number | null;
+  paused: boolean;
+  pausedAt: number | null;
+  remainingMs: number | null;
   winner: 'villager' | 'werewolf' | null;
   votes: Record<string, string>;
   seerCheckResult: { playerId: string; isWerewolf: boolean } | null;

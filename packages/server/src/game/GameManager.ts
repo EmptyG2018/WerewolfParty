@@ -1,8 +1,8 @@
 import { Server, Socket } from 'socket.io';
 import {
   Room, Player, Role, GamePhase, GameState, SpeakingState,
-  ClientToServerEvents, ServerToClientEvents, ROLES, MIN_PLAYERS,
-  isWolfRole, isGodRole
+  ClientToServerEvents, ServerToClientEvents, MIN_PLAYERS,
+  RoleAbility, isWolfRole, roleHasAbility, roleRevealsAsWolf
 } from '@werewolf/shared';
 import { RoomManager } from '../rooms/RoomManager';
 import { GameEngine } from './GameEngine';
@@ -23,10 +23,14 @@ export class GameManager {
   private io: TypedServer;
   private gameStates: Map<string, GameState> = new Map();
   private phaseTimers: Map<string, NodeJS.Timeout> = new Map();
+  private phaseTimeoutCallbacks: Map<string, () => void> = new Map();
   private nightActions: Map<string, Map<Role, { targetId: string }>> = new Map();
   private roleConfirmations: Map<string, Set<string>> = new Map();  // roomId → confirmed player IDs
   private wolfVotes: Map<string, Map<string, string>> = new Map();  // roomId → (wolfId → targetId) 已确认
   private wolfSelections: Map<string, Map<string, string>> = new Map();  // roomId → (wolfId → targetId) 仅选择
+  private witchSavedTonight: Map<string, boolean> = new Map();
+  private pendingHunterShots: Map<string, { playerId: string; resume: () => void }> = new Map();
+  private hunterShotsUsed: Set<string> = new Set();
 
   constructor(roomManager: RoomManager, io: TypedServer) {
     this.roomManager = roomManager;
@@ -43,12 +47,101 @@ export class GameManager {
 
     const gameState = this.gameStates.get(room.id);
     if (!gameState) return null;
+    if (gameState.paused) {
+      socket.emit('game:error', { message: '游戏已暂停' });
+      return null;
+    }
     if (expectedPhase && gameState.phase !== expectedPhase) return null;
 
-    const player = room.players.find(p => p.id === socket.id);
+    const player = this.roomManager.getPlayerBySocket(socket);
     if (!player) return null;
 
     return { room, gameState, player };
+  }
+
+  private getAliveTarget(room: Room, targetId: string): Player | null {
+    const target = room.players.find(p => p.id === targetId);
+    return target?.status === 'alive' ? target : null;
+  }
+
+  getGameState(roomId: string): GameState | undefined {
+    return this.gameStates.get(roomId);
+  }
+
+  private validatePlayerContext(roomId: string, playerId: string, expectedPhase?: GamePhase): ActionContext | null {
+    const room = this.roomManager.getRoom(roomId);
+    if (!room) return null;
+
+    const gameState = this.gameStates.get(roomId);
+    if (!gameState || gameState.paused) return null;
+    if (expectedPhase && gameState.phase !== expectedPhase) return null;
+
+    const player = room.players.find(roomPlayer => roomPlayer.id === playerId);
+    if (!player) return null;
+
+    return { room, gameState, player };
+  }
+
+  private setPhaseClock(gameState: GameState, phase: GamePhase, timer: number): number | null {
+    const endsAt = timer > 0 ? Date.now() + timer * 1000 : null;
+    gameState.phase = phase;
+    gameState.phaseTimer = timer;
+    gameState.phaseEndsAt = endsAt;
+    gameState.paused = false;
+    gameState.pausedAt = null;
+    gameState.remainingMs = null;
+    return endsAt;
+  }
+
+  private emitPhaseChanged(roomId: string, phase: GamePhase, timer: number, speaking?: SpeakingState): number | null {
+    const gameState = this.gameStates.get(roomId);
+    const endsAt = gameState ? this.setPhaseClock(gameState, phase, timer) : (timer > 0 ? Date.now() + timer * 1000 : null);
+    this.io.to(roomId).emit('game:phaseChanged', { phase, timer, endsAt, speaking });
+    return endsAt;
+  }
+
+  private clearPhaseTimer(roomId: string, clearCallback = true): void {
+    const timeout = this.phaseTimers.get(roomId);
+    if (timeout) clearTimeout(timeout);
+    this.phaseTimers.delete(roomId);
+    if (clearCallback) this.phaseTimeoutCallbacks.delete(roomId);
+  }
+
+  private schedulePhaseTimeout(roomId: string, ms: number, callback: () => void): void {
+    this.clearPhaseTimer(roomId);
+    this.phaseTimeoutCallbacks.set(roomId, callback);
+
+    const timeout = setTimeout(() => {
+      this.phaseTimers.delete(roomId);
+      this.phaseTimeoutCallbacks.delete(roomId);
+
+      const gameState = this.gameStates.get(roomId);
+      if (!gameState || gameState.paused) return;
+
+      callback();
+    }, Math.max(0, ms));
+
+    this.phaseTimers.set(roomId, timeout);
+  }
+
+  private startHunterShot(roomId: string, hunterId: string, resume: () => void): void {
+    const room = this.roomManager.getRoom(roomId);
+    const gameState = this.gameStates.get(roomId);
+    if (!room || !gameState || this.hunterShotsUsed.has(hunterId)) {
+      resume();
+      return;
+    }
+
+    this.pendingHunterShots.set(roomId, { playerId: hunterId, resume });
+    this.emitPhaseChanged(roomId, GamePhase.HUNTER_SHOOT, 15);
+    this.io.to(hunterId).emit('game:hunterRequired', { playerId: hunterId });
+
+    this.schedulePhaseTimeout(roomId, 15000, () => {
+      const pending = this.pendingHunterShots.get(roomId);
+      if (pending?.playerId !== hunterId) return;
+      this.pendingHunterShots.delete(roomId);
+      resume();
+    });
   }
 
   /** 清除当前阶段计时器并推进到下一个夜晚子阶段 */
@@ -56,8 +149,7 @@ export class GameManager {
     const room = this.roomManager.getRoom(roomId);
     if (!room) return;
 
-    const timeout = this.phaseTimers.get(roomId);
-    if (timeout) clearTimeout(timeout);
+    this.clearPhaseTimer(roomId);
 
     const phases = this.engine.getNightPhases(room);
     const currentIndex = phases.indexOf(currentPhase);
@@ -72,12 +164,17 @@ export class GameManager {
       socket.emit('game:error', { message: '未找到房间' });
       return;
     }
-    if (room.hostId !== socket.id) {
+    const host = this.roomManager.getPlayerBySocket(socket);
+    if (!host || room.hostId !== host.id) {
       socket.emit('game:error', { message: '只有房主可以开始游戏' });
       return;
     }
     if (room.players.length < MIN_PLAYERS) {
       socket.emit('game:error', { message: `至少需要${MIN_PLAYERS}名玩家` });
+      return;
+    }
+    if (room.players.some(player => !player.online)) {
+      socket.emit('game:error', { message: '有玩家离线，暂时无法开始游戏' });
       return;
     }
 
@@ -88,24 +185,33 @@ export class GameManager {
     this.gameStates.set(room.id, gameState);
     this.nightActions.set(room.id, new Map());
     this.roleConfirmations.set(room.id, new Set());
+    this.witchSavedTonight.delete(room.id);
+    this.pendingHunterShots.delete(room.id);
+    room.players.forEach(player => this.hunterShotsUsed.delete(player.id));
 
-    gameState.phase = GamePhase.ROLE_CONFIRM;
+    const confirmTime = room.config.roleConfirmTime;
+    this.setPhaseClock(gameState, GamePhase.ROLE_CONFIRM, confirmTime);
+    const wolfTeam = room.players
+      .filter(player => player.role !== null && isWolfRole(player.role, room.config.hybridRoles))
+      .map(player => player.id);
     room.players.forEach(player => {
-      const playerSocket = this.io.sockets.sockets.get(player.id);
-      if (playerSocket) {
-        playerSocket.emit('game:started', { gameState, myRole: player.role! });
-      }
+      this.io.to(player.id).emit('game:started', {
+        gameState,
+        myRole: player.role!,
+        wolfTeam: player.role !== null && isWolfRole(player.role, room.config.hybridRoles) ? wolfTeam : undefined
+      });
     });
 
     // 确认身份：手动确认 + 倒计时双重机制
-    const confirmTime = room.config.roleConfirmTime;
-    this.io.to(room.id).emit('game:phaseChanged', { phase: GamePhase.ROLE_CONFIRM, timer: confirmTime });
+    this.io.to(room.id).emit('game:phaseChanged', {
+      phase: GamePhase.ROLE_CONFIRM,
+      timer: confirmTime,
+      endsAt: gameState.phaseEndsAt
+    });
 
-    const timeout = setTimeout(() => {
+    this.schedulePhaseTimeout(room.id, confirmTime * 1000, () => {
       this.startNightPhase(room.id);
-    }, confirmTime * 1000);
-
-    this.phaseTimers.set(room.id, timeout);
+    });
   }
 
   confirmRole(socket: TypedSocket): void {
@@ -114,21 +220,161 @@ export class GameManager {
 
     const gameState = this.gameStates.get(room.id);
     if (!gameState || gameState.phase !== GamePhase.ROLE_CONFIRM) return;
+    if (gameState.paused) {
+      socket.emit('game:error', { message: '游戏已暂停' });
+      return;
+    }
 
     const confirmed = this.roleConfirmations.get(room.id);
-    if (!confirmed || confirmed.has(socket.id)) return;
+    const player = this.roomManager.getPlayerBySocket(socket);
+    if (!player || !confirmed || confirmed.has(player.id)) return;
 
-    confirmed.add(socket.id);
+    confirmed.add(player.id);
 
     // 广播给房间内所有人（让客户端显示谁已确认）
-    this.io.to(room.id).emit('game:roleConfirmed', { playerId: socket.id });
+    this.io.to(room.id).emit('game:roleConfirmed', { playerId: player.id });
 
     // 所有玩家都确认，立即进入夜晚
     if (confirmed.size >= room.players.length) {
-      const timeout = this.phaseTimers.get(room.id);
-      if (timeout) clearTimeout(timeout);
+      this.clearPhaseTimer(room.id);
       this.startNightPhase(room.id);
     }
+  }
+
+  confirmRoleByPlayer(roomId: string, playerId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.ROLE_CONFIRM);
+    if (!ctx) return false;
+
+    const confirmed = this.roleConfirmations.get(roomId);
+    if (!confirmed || confirmed.has(playerId)) return false;
+
+    confirmed.add(playerId);
+    this.io.to(roomId).emit('game:roleConfirmed', { playerId });
+
+    if (confirmed.size >= ctx.room.players.length) {
+      this.clearPhaseTimer(roomId);
+      this.startNightPhase(roomId);
+    }
+    return true;
+  }
+
+  reconnect(socket: TypedSocket, sessionId: string): void {
+    const room = this.roomManager.reconnectRoom(socket, sessionId);
+    if (!room) return;
+
+    const player = this.roomManager.getPlayerBySocket(socket);
+    if (!player || room.status === 'waiting') return;
+
+    const gameState = this.gameStates.get(room.id);
+    if (!gameState) return;
+
+    const wolfTeam = room.players
+      .filter(roomPlayer => roomPlayer.role !== null && isWolfRole(roomPlayer.role, room.config.hybridRoles))
+      .map(roomPlayer => roomPlayer.id);
+
+    this.io.to(player.id).emit('game:started', {
+      gameState,
+      myRole: player.role!,
+      wolfTeam: player.role !== null && isWolfRole(player.role, room.config.hybridRoles) ? wolfTeam : undefined
+    });
+
+    if (gameState.paused) {
+      this.io.to(player.id).emit('game:paused', { remainingMs: gameState.remainingMs });
+    } else {
+      this.io.to(player.id).emit('game:phaseChanged', {
+        phase: gameState.phase,
+        timer: gameState.phaseTimer,
+        endsAt: gameState.phaseEndsAt,
+        speaking: gameState.speaking ?? undefined
+      });
+    }
+
+    const confirmed = this.roleConfirmations.get(room.id);
+    confirmed?.forEach(playerId => {
+      this.io.to(player.id).emit('game:roleConfirmed', { playerId });
+    });
+
+    if (player.role !== null && isWolfRole(player.role, room.config.hybridRoles)) {
+      const wolfSelections = this.wolfSelections.get(room.id);
+      const selectionsObj: Record<string, string> = {};
+      wolfSelections?.forEach((targetId, wolfId) => { selectionsObj[wolfId] = targetId; });
+      this.io.to(player.id).emit('game:wolfSelectionUpdate', { selections: selectionsObj });
+
+      const wolfVotes = this.wolfVotes.get(room.id);
+      const wolfVotesObj: Record<string, string> = {};
+      wolfVotes?.forEach((targetId, wolfId) => { wolfVotesObj[wolfId] = targetId; });
+      this.io.to(player.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj });
+    }
+  }
+
+  pauseGame(socket: TypedSocket): void {
+    const room = this.roomManager.getRoomBySocket(socket);
+    const player = this.roomManager.getPlayerBySocket(socket);
+    if (!room || !player) return;
+    if (room.hostId !== player.id) {
+      socket.emit('game:error', { message: '只有房主可以暂停游戏' });
+      return;
+    }
+    if (room.status !== 'playing') {
+      socket.emit('game:error', { message: '只有游戏进行中可以暂停' });
+      return;
+    }
+
+    const gameState = this.gameStates.get(room.id);
+    if (!gameState || gameState.phase === GamePhase.GAME_OVER) return;
+    if (gameState.paused) return;
+
+    const now = Date.now();
+    const remainingMs = gameState.phaseEndsAt !== null
+      ? Math.max(0, gameState.phaseEndsAt - now)
+      : gameState.phaseTimer > 0
+      ? gameState.phaseTimer * 1000
+      : null;
+
+    this.clearPhaseTimer(room.id, false);
+    gameState.paused = true;
+    gameState.pausedAt = now;
+    gameState.remainingMs = remainingMs;
+    gameState.phaseEndsAt = null;
+    gameState.phaseTimer = remainingMs !== null ? Math.ceil(remainingMs / 1000) : 0;
+
+    this.io.to(room.id).emit('game:paused', { remainingMs });
+  }
+
+  resumeGame(socket: TypedSocket): void {
+    const room = this.roomManager.getRoomBySocket(socket);
+    const player = this.roomManager.getPlayerBySocket(socket);
+    if (!room || !player) return;
+    if (room.hostId !== player.id) {
+      socket.emit('game:error', { message: '只有房主可以恢复游戏' });
+      return;
+    }
+
+    const gameState = this.gameStates.get(room.id);
+    if (!gameState || !gameState.paused || gameState.phase === GamePhase.GAME_OVER) return;
+
+    const remainingMs = gameState.remainingMs ?? 0;
+    const timer = Math.ceil(remainingMs / 1000);
+    const endsAt = remainingMs > 0 ? Date.now() + remainingMs : null;
+    const callback = this.phaseTimeoutCallbacks.get(room.id);
+
+    gameState.paused = false;
+    gameState.pausedAt = null;
+    gameState.remainingMs = null;
+    gameState.phaseTimer = timer;
+    gameState.phaseEndsAt = endsAt;
+
+    if (callback) {
+      this.schedulePhaseTimeout(room.id, remainingMs, callback);
+    }
+
+    const payload = {
+      phase: gameState.phase,
+      timer,
+      endsAt,
+      speaking: gameState.speaking ?? undefined
+    };
+    this.io.to(room.id).emit('game:resumed', payload);
   }
 
   // ============ 夜晚阶段 ============
@@ -141,6 +387,7 @@ export class GameManager {
     this.nightActions.set(roomId, new Map());
     this.wolfVotes.set(roomId, new Map());
     this.wolfSelections.set(roomId, new Map());
+    this.witchSavedTonight.set(roomId, false);
     const phases = this.engine.getNightPhases(room);
     this.runNightPhases(roomId, phases, 0);
   }
@@ -155,27 +402,24 @@ export class GameManager {
     if (!gameState) return;
 
     const phase = phases[index];
-    gameState.phase = phase;
-    this.io.to(roomId).emit('game:phaseChanged', { phase, timer: 180 });
+    this.emitPhaseChanged(roomId, phase, 30);
 
-    const timeout = setTimeout(() => {
+    this.schedulePhaseTimeout(roomId, 30000, () => {
       // 狼人阶段超时：用已确认的投票结算（未确认=弃票）
       if (phase === GamePhase.NIGHT_WEREWOLF) {
         this.resolveWolfPhase(roomId);
       } else {
         this.runNightPhases(roomId, phases, index + 1);
       }
-    }, 180000);
-
-    this.phaseTimers.set(roomId, timeout);
+    });
   }
 
   werewolfKill(socket: TypedSocket, targetId: string): void {
     const ctx = this.validateContext(socket, GamePhase.NIGHT_WEREWOLF);
-    if (!ctx || !ctx.player.role || !isWolfRole(ctx.player.role) || ctx.player.status === 'dead') return;
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WEREWOLF_KILL) || ctx.player.status === 'dead') return;
 
-    const target = ctx.room.players.find(p => p.id === targetId);
-    if (!target || target.status === 'dead') return;
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target || target.id === ctx.player.id) return;
 
     // 记录选择（仅本地广播，不确认投票）
     let selections = this.wolfSelections.get(ctx.room.id);
@@ -183,20 +427,44 @@ export class GameManager {
       selections = new Map();
       this.wolfSelections.set(ctx.room.id, selections);
     }
-    selections.set(socket.id, targetId);
+    selections.set(ctx.player.id, targetId);
 
-    // 广播选择更新给房间内所有人（让狼队友看到谁选了谁）
+    // 广播选择更新给狼队友
     const selectionsObj: Record<string, string> = {};
     selections.forEach((tid, wid) => { selectionsObj[wid] = tid; });
-    this.io.to(ctx.room.id).emit('game:wolfSelectionUpdate', { selections: selectionsObj });
+    ctx.room.players
+      .filter(player => player.role !== null && isWolfRole(player.role, ctx.room.config.hybridRoles))
+      .forEach(player => this.io.to(player.id).emit('game:wolfSelectionUpdate', { selections: selectionsObj }));
+  }
+
+  werewolfKillByPlayer(roomId: string, playerId: string, targetId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.NIGHT_WEREWOLF);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WEREWOLF_KILL) || ctx.player.status === 'dead') return false;
+
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target || target.id === ctx.player.id) return false;
+
+    let selections = this.wolfSelections.get(ctx.room.id);
+    if (!selections) {
+      selections = new Map();
+      this.wolfSelections.set(ctx.room.id, selections);
+    }
+    selections.set(ctx.player.id, targetId);
+
+    const selectionsObj: Record<string, string> = {};
+    selections.forEach((tid, wid) => { selectionsObj[wid] = tid; });
+    ctx.room.players
+      .filter(player => player.role !== null && isWolfRole(player.role, ctx.room.config.hybridRoles))
+      .forEach(player => this.io.to(player.id).emit('game:wolfSelectionUpdate', { selections: selectionsObj }));
+    return true;
   }
 
   wolfConfirmVote(socket: TypedSocket): void {
     const ctx = this.validateContext(socket, GamePhase.NIGHT_WEREWOLF);
-    if (!ctx || !ctx.player.role || !isWolfRole(ctx.player.role) || ctx.player.status === 'dead') return;
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WEREWOLF_KILL) || ctx.player.status === 'dead') return;
 
     const selections = this.wolfSelections.get(ctx.room.id);
-    const targetId = selections?.get(socket.id);
+    const targetId = selections?.get(ctx.player.id);
     if (!targetId) {
       socket.emit('game:error', { message: '请先选择目标' });
       return;
@@ -208,20 +476,51 @@ export class GameManager {
       votes = new Map();
       this.wolfVotes.set(ctx.room.id, votes);
     }
-    votes.set(socket.id, targetId);
+    votes.set(ctx.player.id, targetId);
 
-    // 广播投票确认
+    // 广播投票确认给狼队友
     const wolfVotesObj: Record<string, string> = {};
     votes.forEach((tid, wid) => { wolfVotesObj[wid] = tid; });
-    this.io.to(ctx.room.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj });
+    ctx.room.players
+      .filter(player => player.role !== null && isWolfRole(player.role, ctx.room.config.hybridRoles))
+      .forEach(player => this.io.to(player.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj }));
 
     // 检查所有存活狼人是否都已确认投票
-    const wolves = ctx.room.players.filter(p => p.role !== null && isWolfRole(p.role) && p.status === 'alive');
+    const wolves = ctx.room.players.filter(p => p.role !== null && isWolfRole(p.role, ctx.room.config.hybridRoles) && p.status === 'alive');
     const allVoted = wolves.every(w => votes.has(w.id));
 
     if (allVoted) {
       this.resolveWolfPhase(ctx.room.id);
     }
+  }
+
+  wolfConfirmVoteByPlayer(roomId: string, playerId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.NIGHT_WEREWOLF);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WEREWOLF_KILL) || ctx.player.status === 'dead') return false;
+
+    const selections = this.wolfSelections.get(ctx.room.id);
+    const targetId = selections?.get(ctx.player.id);
+    if (!targetId) return false;
+
+    let votes = this.wolfVotes.get(ctx.room.id);
+    if (!votes) {
+      votes = new Map();
+      this.wolfVotes.set(ctx.room.id, votes);
+    }
+    votes.set(ctx.player.id, targetId);
+
+    const wolfVotesObj: Record<string, string> = {};
+    votes.forEach((tid, wid) => { wolfVotesObj[wid] = tid; });
+    ctx.room.players
+      .filter(player => player.role !== null && isWolfRole(player.role, ctx.room.config.hybridRoles))
+      .forEach(player => this.io.to(player.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj }));
+
+    const wolves = ctx.room.players.filter(p => p.role !== null && isWolfRole(p.role, ctx.room.config.hybridRoles) && p.status === 'alive');
+    const allVoted = wolves.every(w => votes.has(w.id));
+    if (allVoted) {
+      this.resolveWolfPhase(ctx.room.id);
+    }
+    return true;
   }
 
   /** 狼人阶段结算：全部弃票=平安夜，平票随机，否则多数票 */
@@ -230,14 +529,13 @@ export class GameManager {
     const votes = this.wolfVotes.get(roomId);
     if (!room) return;
 
-    const wolves = room.players.filter(p => p.role !== null && isWolfRole(p.role) && p.status === 'alive');
+    const wolves = room.players.filter(p => p.role !== null && isWolfRole(p.role, room.config.hybridRoles) && p.status === 'alive');
     const finalTarget = this.resolveWolfVote(votes || new Map(), wolves);
 
     const actions = this.nightActions.get(roomId);
     if (actions && finalTarget) actions.set(Role.WEREWOLF, { targetId: finalTarget });
 
-    const timeout = this.phaseTimers.get(roomId);
-    if (timeout) clearTimeout(timeout);
+    this.clearPhaseTimer(roomId);
     this.advanceNightPhase(roomId, GamePhase.NIGHT_WEREWOLF);
   }
 
@@ -263,18 +561,29 @@ export class GameManager {
 
   seerCheck(socket: TypedSocket, targetId: string): void {
     const ctx = this.validateContext(socket, GamePhase.NIGHT_SEER);
-    if (!ctx || ctx.player.role !== Role.SEER || ctx.player.status === 'dead') return;
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.SEER_CHECK) || ctx.player.status === 'dead') return;
 
-    const target = ctx.room.players.find(p => p.id === targetId);
-    if (!target || target.status === 'dead') return;
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target) return;
 
-    socket.emit('game:seerResult', { playerId: targetId, isWerewolf: target.role === Role.WEREWOLF });
+    socket.emit('game:seerResult', { playerId: targetId, isWerewolf: target.role !== null && roleRevealsAsWolf(target.role) });
     this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_SEER);
+  }
+
+  seerCheckByPlayer(roomId: string, playerId: string, targetId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.NIGHT_SEER);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.SEER_CHECK) || ctx.player.status === 'dead') return false;
+
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target) return false;
+
+    this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_SEER);
+    return true;
   }
 
   witchSave(socket: TypedSocket): void {
     const ctx = this.validateContext(socket, GamePhase.NIGHT_WITCH);
-    if (!ctx || ctx.player.role !== Role.WITCH || ctx.player.status === 'dead') return;
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WITCH_SAVE) || ctx.player.status === 'dead') return;
 
     if (ctx.player.skillUsed.witchSave) {
       socket.emit('game:error', { message: '解药已使用' });
@@ -287,17 +596,21 @@ export class GameManager {
 
     ctx.player.skillUsed.witchSave = true;
     ctx.gameState.witchSaveUsed = true;
+    this.witchSavedTonight.set(ctx.room.id, true);
     this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_WITCH);
   }
 
   witchPoison(socket: TypedSocket, targetId: string): void {
     const ctx = this.validateContext(socket, GamePhase.NIGHT_WITCH);
-    if (!ctx || ctx.player.role !== Role.WITCH || ctx.player.status === 'dead') return;
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WITCH_POISON) || ctx.player.status === 'dead') return;
 
     if (ctx.player.skillUsed.witchPoison) {
       socket.emit('game:error', { message: '毒药已使用' });
       return;
     }
+
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target || target.id === ctx.player.id) return;
 
     const actions = this.nightActions.get(ctx.room.id);
     if (actions) actions.set(Role.WITCH, { targetId });
@@ -306,14 +619,35 @@ export class GameManager {
     this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_WITCH);
   }
 
+  witchPassByPlayer(roomId: string, playerId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.NIGHT_WITCH);
+    if (
+      !ctx ||
+      !ctx.player.role ||
+      (
+        !roleHasAbility(ctx.player.role, RoleAbility.WITCH_SAVE) &&
+        !roleHasAbility(ctx.player.role, RoleAbility.WITCH_POISON)
+      ) ||
+      ctx.player.status === 'dead'
+    ) {
+      return false;
+    }
+
+    this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_WITCH);
+    return true;
+  }
+
   guardProtect(socket: TypedSocket, targetId: string): void {
     const ctx = this.validateContext(socket, GamePhase.NIGHT_GUARD);
-    if (!ctx || ctx.player.role !== Role.GUARD || ctx.player.status === 'dead') return;
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.GUARD_PROTECT) || ctx.player.status === 'dead') return;
 
     if (ctx.player.skillUsed.lastGuardTarget === targetId) {
       socket.emit('game:error', { message: '不能连续两晚守护同一人' });
       return;
     }
+
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target) return;
 
     const actions = this.nightActions.get(ctx.room.id);
     if (actions) actions.set(Role.GUARD, { targetId });
@@ -322,19 +656,37 @@ export class GameManager {
     this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_GUARD);
   }
 
+  guardProtectByPlayer(roomId: string, playerId: string, targetId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.NIGHT_GUARD);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.GUARD_PROTECT) || ctx.player.status === 'dead') return false;
+    if (ctx.player.skillUsed.lastGuardTarget === targetId) return false;
+
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target) return false;
+
+    const actions = this.nightActions.get(ctx.room.id);
+    if (actions) actions.set(Role.GUARD, { targetId });
+
+    ctx.player.skillUsed.lastGuardTarget = targetId;
+    this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_GUARD);
+    return true;
+  }
+
   private resolveNight(roomId: string): void {
     const room = this.roomManager.getRoom(roomId);
     const gameState = this.gameStates.get(roomId);
     const actions = this.nightActions.get(roomId);
     if (!room || !gameState || !actions) return;
 
-    const result = this.engine.resolveNight(room, gameState, actions);
+    const result = this.engine.resolveNight(room, gameState, actions, this.witchSavedTonight.get(roomId) ?? false);
 
     // 应用死亡
     result.deadPlayerIds.forEach(playerId => {
       const reason = playerId === result.killedPlayerId ? 'killed' : 'poisoned';
-      this.engine.killPlayer(room, gameState, playerId, reason);
-      this.io.to(roomId).emit('game:playerDead', { playerId, reason });
+      const player = this.engine.killPlayer(room, gameState, playerId, reason);
+      if (player) {
+        this.io.to(roomId).emit('game:playerDead', { playerId, reason, day: gameState.day });
+      }
     });
 
     gameState.lastKilledPlayer = result.killedPlayerId;
@@ -347,15 +699,13 @@ export class GameManager {
     }
 
     if (result.wolfKingCanShoot) {
-      gameState.phase = GamePhase.WOLF_KING_SHOOT;
-      this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.WOLF_KING_SHOOT, timer: 180 });
+      this.emitPhaseChanged(roomId, GamePhase.WOLF_KING_SHOOT, 15);
       this.io.to(result.killedPlayerId!).emit('game:wolfKingRequired', { playerId: result.killedPlayerId! });
 
-      const timeout = setTimeout(() => {
+      this.schedulePhaseTimeout(roomId, 15000, () => {
         gameState.wolfKingCanShoot = false;
         this.startDayPhase(roomId, result.deadPlayerIds);
-      }, 180000);
-      this.phaseTimers.set(roomId, timeout);
+      });
       return;
     }
 
@@ -369,7 +719,10 @@ export class GameManager {
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
-    gameState.phase = GamePhase.DAY_ANNOUNCE;
+    this.setPhaseClock(gameState, GamePhase.DAY_ANNOUNCE, 5);
+    const hunterToShoot = deadPlayers
+      .map(playerId => room.players.find(p => p.id === playerId))
+      .find(player => player?.role && roleHasAbility(player.role, RoleAbility.HUNTER_SHOOT) && !this.hunterShotsUsed.has(player.id));
 
     if (deadPlayers.length === 0) {
       this.io.to(roomId).emit('game:systemMessage', {
@@ -377,20 +730,20 @@ export class GameManager {
         content: '昨晚是平安夜，没有人死亡',
         timestamp: Date.now()
       });
-    } else {
-      deadPlayers.forEach(playerId => {
-        const player = room.players.find(p => p.id === playerId);
-        if (player) {
-          this.io.to(roomId).emit('game:playerDead', { playerId, reason: 'killed' });
-          if (player.role === Role.HUNTER) {
-            this.io.to(playerId).emit('game:hunterRequired', { playerId });
-          }
-        }
-      });
     }
 
-    this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.DAY_ANNOUNCE, timer: 180 });
-    setTimeout(() => this.startSpeakingPhase(roomId), 180000);
+    this.io.to(roomId).emit('game:phaseChanged', {
+      phase: GamePhase.DAY_ANNOUNCE,
+      timer: 5,
+      endsAt: gameState.phaseEndsAt
+    });
+    this.schedulePhaseTimeout(roomId, 5000, () => {
+      if (hunterToShoot) {
+        this.startHunterShot(roomId, hunterToShoot.id, () => this.startSpeakingPhase(roomId));
+      } else {
+        this.startSpeakingPhase(roomId);
+      }
+    });
   }
 
   private startSpeakingPhase(roomId: string): void {
@@ -398,7 +751,7 @@ export class GameManager {
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
-    gameState.phase = GamePhase.DAY_SPEAKING;
+    this.setPhaseClock(gameState, GamePhase.DAY_SPEAKING, 60);
     gameState.votes = {};
 
     const speaking: SpeakingState = {
@@ -408,8 +761,43 @@ export class GameManager {
     };
     gameState.speaking = speaking;
 
-    this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.DAY_SPEAKING, timer: 0, speaking });
+    this.io.to(roomId).emit('game:phaseChanged', {
+      phase: GamePhase.DAY_SPEAKING,
+      timer: 60,
+      endsAt: gameState.phaseEndsAt,
+      speaking
+    });
     this.io.to(roomId).emit('game:speakingUpdate', { speaking });
+    this.scheduleSpeakingTimeout(roomId);
+  }
+
+  private scheduleSpeakingTimeout(roomId: string): void {
+    this.schedulePhaseTimeout(roomId, 60000, () => this.advanceSpeaking(roomId));
+  }
+
+  private advanceSpeaking(roomId: string, playerId?: string): void {
+    const room = this.roomManager.getRoom(roomId);
+    const gameState = this.gameStates.get(roomId);
+    if (!room || !gameState || gameState.phase !== GamePhase.DAY_SPEAKING || !gameState.speaking) return;
+
+    const currentSpeakerId = gameState.speaking.order[gameState.speaking.currentIndex];
+    if (playerId && playerId !== currentSpeakerId) return;
+
+    if (currentSpeakerId && !gameState.speaking.confirmed.includes(currentSpeakerId)) {
+      gameState.speaking.confirmed.push(currentSpeakerId);
+    }
+    gameState.speaking.currentIndex++;
+
+    this.io.to(roomId).emit('game:speakingUpdate', { speaking: gameState.speaking });
+
+    if (gameState.speaking.currentIndex >= gameState.speaking.order.length) {
+      this.clearPhaseTimer(roomId);
+      this.startVotePhase(roomId);
+      return;
+    }
+
+    this.emitPhaseChanged(roomId, GamePhase.DAY_SPEAKING, 60, gameState.speaking);
+    this.scheduleSpeakingTimeout(roomId);
   }
 
   speakingDone(socket: TypedSocket): void {
@@ -417,21 +805,23 @@ export class GameManager {
     if (!ctx || !ctx.gameState.speaking || ctx.player.status === 'dead') return;
 
     const currentSpeakerId = ctx.gameState.speaking.order[ctx.gameState.speaking.currentIndex];
-    if (socket.id !== currentSpeakerId) {
+    if (ctx.player.id !== currentSpeakerId) {
       socket.emit('game:error', { message: '还没轮到你发言' });
       return;
     }
 
-    if (!ctx.gameState.speaking.confirmed.includes(socket.id)) {
-      ctx.gameState.speaking.confirmed.push(socket.id);
-    }
-    ctx.gameState.speaking.currentIndex++;
+    this.advanceSpeaking(ctx.room.id, ctx.player.id);
+  }
 
-    this.io.to(ctx.room.id).emit('game:speakingUpdate', { speaking: ctx.gameState.speaking });
+  speakingDoneByPlayer(roomId: string, playerId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.DAY_SPEAKING);
+    if (!ctx || !ctx.gameState.speaking || ctx.player.status === 'dead') return false;
 
-    if (ctx.gameState.speaking.currentIndex >= ctx.gameState.speaking.order.length) {
-      this.startVotePhase(ctx.room.id);
-    }
+    const currentSpeakerId = ctx.gameState.speaking.order[ctx.gameState.speaking.currentIndex];
+    if (ctx.player.id !== currentSpeakerId) return false;
+
+    this.advanceSpeaking(ctx.room.id, ctx.player.id);
+    return true;
   }
 
   private startVotePhase(roomId: string): void {
@@ -439,30 +829,54 @@ export class GameManager {
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
-    gameState.phase = GamePhase.DAY_VOTE;
+    this.setPhaseClock(gameState, GamePhase.DAY_VOTE, room.config.voteTime);
     gameState.votes = {};
     gameState.speaking = null;
 
-    this.io.to(roomId).emit('game:phaseChanged', { phase: GamePhase.DAY_VOTE, timer: room.config.voteTime });
+    this.io.to(roomId).emit('game:phaseChanged', {
+      phase: GamePhase.DAY_VOTE,
+      timer: room.config.voteTime,
+      endsAt: gameState.phaseEndsAt
+    });
 
-    const timeout = setTimeout(() => this.resolveVote(roomId), room.config.voteTime * 1000);
-    this.phaseTimers.set(roomId, timeout);
+    this.schedulePhaseTimeout(roomId, room.config.voteTime * 1000, () => this.resolveVote(roomId));
   }
 
   vote(socket: TypedSocket, targetId: string): void {
     const ctx = this.validateContext(socket, GamePhase.DAY_VOTE);
     if (!ctx || ctx.player.status === 'dead') return;
 
-    ctx.gameState.votes[socket.id] = targetId;
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target || target.id === ctx.player.id) return;
+
+    ctx.gameState.votes[ctx.player.id] = targetId;
 
     const alivePlayers = ctx.room.players.filter(p => p.status === 'alive');
     const allVoted = alivePlayers.every(p => ctx.gameState.votes[p.id]);
 
     if (allVoted) {
-      const timeout = this.phaseTimers.get(ctx.room.id);
-      if (timeout) clearTimeout(timeout);
+      this.clearPhaseTimer(ctx.room.id);
       this.resolveVote(ctx.room.id);
     }
+  }
+
+  voteByPlayer(roomId: string, playerId: string, targetId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.DAY_VOTE);
+    if (!ctx || ctx.player.status === 'dead') return false;
+
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target || target.id === ctx.player.id) return false;
+
+    ctx.gameState.votes[ctx.player.id] = targetId;
+
+    const alivePlayers = ctx.room.players.filter(p => p.status === 'alive');
+    const allVoted = alivePlayers.every(p => ctx.gameState.votes[p.id]);
+
+    if (allVoted) {
+      this.clearPhaseTimer(ctx.room.id);
+      this.resolveVote(ctx.room.id);
+    }
+    return true;
   }
 
   private resolveVote(roomId: string): void {
@@ -476,10 +890,14 @@ export class GameManager {
 
     if (result.eliminatedId) {
       const player = this.engine.killPlayer(room, gameState, result.eliminatedId, 'voted');
-      this.io.to(roomId).emit('game:playerDead', { playerId: result.eliminatedId, reason: 'voted' });
+      if (!player) {
+        this.afterDeathCheck(roomId);
+        return;
+      }
+      this.io.to(roomId).emit('game:playerDead', { playerId: result.eliminatedId, reason: 'voted', day: gameState.day });
 
-      if (player?.role === Role.HUNTER) {
-        this.io.to(result.eliminatedId).emit('game:hunterRequired', { playerId: result.eliminatedId });
+      if (player.role && roleHasAbility(player.role, RoleAbility.HUNTER_SHOOT)) {
+        this.startHunterShot(roomId, result.eliminatedId, () => this.afterDeathCheck(roomId));
         return;
       }
     }
@@ -490,14 +908,23 @@ export class GameManager {
   // ============ 特殊角色 ============
 
   hunterShoot(socket: TypedSocket, targetId: string): void {
-    const ctx = this.validateContext(socket);
-    if (!ctx || ctx.player.role !== Role.HUNTER) return;
+    const ctx = this.validateContext(socket, GamePhase.HUNTER_SHOOT);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.HUNTER_SHOOT)) return;
 
-    const target = ctx.room.players.find(p => p.id === targetId);
-    if (!target || target.status === 'dead') return;
+    const pending = this.pendingHunterShots.get(ctx.room.id);
+    if (!pending || pending.playerId !== ctx.player.id || this.hunterShotsUsed.has(ctx.player.id)) return;
 
-    this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
-    this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot' });
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target) return;
+
+    this.hunterShotsUsed.add(ctx.player.id);
+    const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
+    if (shotPlayer) {
+      this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot', day: ctx.gameState.day });
+    }
+    this.pendingHunterShots.delete(ctx.room.id);
+
+    this.clearPhaseTimer(ctx.room.id);
 
     const winner = this.engine.checkWinner(ctx.room);
     if (winner) {
@@ -505,25 +932,51 @@ export class GameManager {
       return;
     }
 
-    if (ctx.gameState.phase === GamePhase.DAY_ANNOUNCE || ctx.gameState.phase === GamePhase.DAY_VOTE) {
-      ctx.gameState.day++;
-      setTimeout(() => this.startNightPhase(ctx.room.id), 180000);
+    pending.resume();
+  }
+
+  hunterShootByPlayer(roomId: string, playerId: string, targetId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.HUNTER_SHOOT);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.HUNTER_SHOOT)) return false;
+
+    const pending = this.pendingHunterShots.get(ctx.room.id);
+    if (!pending || pending.playerId !== ctx.player.id || this.hunterShotsUsed.has(ctx.player.id)) return false;
+
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target) return false;
+
+    this.hunterShotsUsed.add(ctx.player.id);
+    const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
+    if (shotPlayer) {
+      this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot', day: ctx.gameState.day });
     }
+    this.pendingHunterShots.delete(ctx.room.id);
+    this.clearPhaseTimer(ctx.room.id);
+
+    const winner = this.engine.checkWinner(ctx.room);
+    if (winner) {
+      this.endGame(ctx.room.id, winner);
+      return true;
+    }
+
+    pending.resume();
+    return true;
   }
 
   wolfKingShoot(socket: TypedSocket, targetId: string): void {
     const ctx = this.validateContext(socket, GamePhase.WOLF_KING_SHOOT);
-    if (!ctx || ctx.player.role !== Role.WOLF_KING) return;
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WOLF_KING_SHOOT) || !ctx.gameState.wolfKingCanShoot) return;
 
-    const target = ctx.room.players.find(p => p.id === targetId);
-    if (!target || target.status === 'dead') return;
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target) return;
 
-    this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
-    this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot' });
+    const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
+    if (shotPlayer) {
+      this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot', day: ctx.gameState.day });
+    }
 
     ctx.gameState.wolfKingCanShoot = false;
-    const timeout = this.phaseTimers.get(ctx.room.id);
-    if (timeout) clearTimeout(timeout);
+    this.clearPhaseTimer(ctx.room.id);
 
     const winner = this.engine.checkWinner(ctx.room);
     if (winner) {
@@ -532,6 +985,31 @@ export class GameManager {
     }
 
     this.startDayPhase(ctx.room.id, [ctx.gameState.lastKilledPlayer!, targetId]);
+  }
+
+  wolfKingShootByPlayer(roomId: string, playerId: string, targetId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.WOLF_KING_SHOOT);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WOLF_KING_SHOOT) || !ctx.gameState.wolfKingCanShoot) return false;
+
+    const target = this.getAliveTarget(ctx.room, targetId);
+    if (!target) return false;
+
+    const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
+    if (shotPlayer) {
+      this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot', day: ctx.gameState.day });
+    }
+
+    ctx.gameState.wolfKingCanShoot = false;
+    this.clearPhaseTimer(ctx.room.id);
+
+    const winner = this.engine.checkWinner(ctx.room);
+    if (winner) {
+      this.endGame(ctx.room.id, winner);
+      return true;
+    }
+
+    this.startDayPhase(ctx.room.id, [ctx.gameState.lastKilledPlayer!, targetId]);
+    return true;
   }
 
   // ============ 通用流程 ============
@@ -549,7 +1027,9 @@ export class GameManager {
     }
 
     gameState.day++;
-    setTimeout(() => this.startNightPhase(roomId), 180000);
+    gameState.phaseTimer = 3;
+    gameState.phaseEndsAt = Date.now() + 3000;
+    this.schedulePhaseTimeout(roomId, 3000, () => this.startNightPhase(roomId));
   }
 
   private endGame(roomId: string, winner: 'villager' | 'werewolf'): void {
@@ -558,6 +1038,8 @@ export class GameManager {
     if (!room || !gameState) return;
 
     gameState.phase = GamePhase.GAME_OVER;
+    gameState.phaseEndsAt = null;
+    gameState.phaseTimer = 0;
     gameState.winner = winner;
     room.status = 'finished';
 
@@ -568,13 +1050,14 @@ export class GameManager {
 
   /** 清理游戏状态，防止内存泄漏 */
   cleanup(roomId: string): void {
-    const timeout = this.phaseTimers.get(roomId);
-    if (timeout) clearTimeout(timeout);
-    this.phaseTimers.delete(roomId);
+    this.clearPhaseTimer(roomId);
     this.gameStates.delete(roomId);
     this.nightActions.delete(roomId);
     this.roleConfirmations.delete(roomId);
     this.wolfVotes.delete(roomId);
     this.wolfSelections.delete(roomId);
+    this.witchSavedTonight.delete(roomId);
+    this.pendingHunterShots.delete(roomId);
+    this.phaseTimeoutCallbacks.delete(roomId);
   }
 }

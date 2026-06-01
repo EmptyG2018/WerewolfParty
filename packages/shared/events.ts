@@ -5,6 +5,7 @@ import { Room, RoomConfig } from './room';
 export interface ClientToServerEvents {
   'room:create': (data: { playerName: string; config: Partial<RoomConfig> }) => void;
   'room:join': (data: { roomId: string; playerName: string }) => void;
+  'room:reconnect': (data: { sessionId: string }) => void;
   'room:leave': () => void;
   'room:updateConfig': (data: Partial<RoomConfig>) => void;
   'room:start': () => void;
@@ -12,6 +13,8 @@ export interface ClientToServerEvents {
   'room:acceptSwap': () => void;
   'room:rejectSwap': () => void;
   'game:confirmRole': () => void;
+  'game:pause': () => void;
+  'game:resume': () => void;
   'game:werewolfKill': (data: { targetId: string }) => void;
   'game:wolfConfirmVote': () => void;
   'game:seerCheck': (data: { targetId: string }) => void;
@@ -26,17 +29,21 @@ export interface ClientToServerEvents {
 
 export interface ServerToClientEvents {
   'room:created': (data: { roomId: string }) => void;
-  'room:joined': (data: { room: Room }) => void;
+  'room:joined': (data: { room: Room; sessionId: string; playerId: string }) => void;
+  'room:reconnected': (data: { room: Room; sessionId: string; playerId: string }) => void;
+  'room:reconnectFailed': (data: { message: string }) => void;
   'room:updated': (data: { room: Room }) => void;
   'room:error': (data: { message: string }) => void;
   'room:playerJoined': (data: { player: Player }) => void;
   'room:playerLeft': (data: { playerId: string }) => void;
   'room:swapRequest': (data: SeatSwapRequest) => void;
   'room:swapResult': (data: { success: boolean; message?: string }) => void;
-  'game:started': (data: { gameState: GameState; myRole: Role }) => void;
-  'game:phaseChanged': (data: { phase: GamePhase; timer: number; speaking?: SpeakingState }) => void;
+  'game:started': (data: { gameState: GameState; myRole: Role; wolfTeam?: string[] }) => void;
+  'game:phaseChanged': (data: { phase: GamePhase; timer: number; endsAt: number | null; speaking?: SpeakingState }) => void;
+  'game:paused': (data: { remainingMs: number | null }) => void;
+  'game:resumed': (data: { phase: GamePhase; timer: number; endsAt: number | null; speaking?: SpeakingState }) => void;
   'game:speakingUpdate': (data: { speaking: SpeakingState }) => void;
-  'game:playerDead': (data: { playerId: string; reason: string }) => void;
+  'game:playerDead': (data: { playerId: string; reason: 'killed' | 'voted' | 'poisoned' | 'shot'; day: number }) => void;
   'game:seerResult': (data: { playerId: string; isWerewolf: boolean }) => void;
   'game:wolfVoteUpdate': (data: { wolfVotes: Record<string, string> }) => void;
   'game:wolfSelectionUpdate': (data: { selections: Record<string, string> }) => void;

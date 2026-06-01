@@ -5,6 +5,7 @@ import cors from 'cors';
 import { RoomManager } from './rooms/RoomManager';
 import { GameManager } from './game/GameManager';
 import { ClientToServerEvents, ServerToClientEvents } from '@werewolf/shared';
+import { registerDebugRoutes } from './debug/debugRoutes';
 
 const app = express();
 const httpServer = createServer(app);
@@ -26,6 +27,10 @@ const gameManager = new GameManager(roomManager, io);
 // 房间删除时清理游戏状态
 roomManager.setOnRoomDeleted((roomId) => gameManager.cleanup(roomId));
 
+if (process.env.NODE_ENV === 'development' || process.env.ENABLE_DEBUG_TOOLS === 'true') {
+  registerDebugRoutes(app, roomManager, gameManager);
+}
+
 // 健康检查接口
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', rooms: roomManager.getRoomCount() });
@@ -46,6 +51,10 @@ io.on('connection', (socket) => {
 
   socket.on('room:join', (data) => {
     roomManager.joinRoom(socket, data.roomId, data.playerName);
+  });
+
+  socket.on('room:reconnect', (data) => {
+    gameManager.reconnect(socket, data.sessionId);
   });
 
   socket.on('room:leave', () => {
@@ -75,6 +84,14 @@ io.on('connection', (socket) => {
   // 游戏事件
   socket.on('game:confirmRole', () => {
     gameManager.confirmRole(socket);
+  });
+
+  socket.on('game:pause', () => {
+    gameManager.pauseGame(socket);
+  });
+
+  socket.on('game:resume', () => {
+    gameManager.resumeGame(socket);
   });
 
   socket.on('game:werewolfKill', (data) => {

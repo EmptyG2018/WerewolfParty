@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { Role, ROLES, MIN_PLAYERS, Player, getCampCounts, getRoleCounts } from '@werewolf/shared';
+import { Role, ROLES, MIN_PLAYERS, Player, getCampCounts, getRoleCounts, isWolfRole } from '@werewolf/shared';
 
 export function Room() {
   const { room, myId, startGame, leaveRoom, error, pendingSwapRequest, swapSeat, acceptSwap, rejectSwap } = useGameStore();
@@ -9,7 +9,8 @@ export function Room() {
   if (!room) return null;
 
   const isHost = room.hostId === myId;
-  const canStart = room.players.length >= MIN_PLAYERS;
+  const allOnline = room.players.every(p => p.online);
+  const canStart = room.players.length >= MIN_PLAYERS && allOnline;
 
   const copyRoomId = () => {
     navigator.clipboard.writeText(room.id);
@@ -19,7 +20,7 @@ export function Room() {
 
   const { wolves, gods, villagers } = getCampCounts(room.config);
   const roleCounts = getRoleCounts(room.config);
-  const hasWolfKing = room.config.roles.includes(Role.WOLF_KING);
+  const wolfExtraRoles = room.config.roles.filter(role => isWolfRole(role) && role !== Role.WEREWOLF);
 
   // 构建座位表：按座位号排列，null 表示空座
   const seats: (Player | null)[] = Array.from({ length: room.config.maxPlayers }, () => null);
@@ -143,7 +144,10 @@ export function Room() {
                 </div>
 
                 {!isEmpty && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-heal animate-breathe shrink-0" />
+                  <div className={`shrink-0 flex items-center gap-1 text-[10px] ${player.online ? 'text-heal' : 'text-moon-mist'}`}>
+                    <div className={`w-1.5 h-1.5 rounded-full ${player.online ? 'bg-heal animate-breathe' : 'bg-moon-mist'}`} />
+                    {!player.online && <span>离线</span>}
+                  </div>
                 )}
               </button>
             );
@@ -159,8 +163,10 @@ export function Room() {
             <div className="bg-forest-50/50 rounded-xl p-3">
               <div className="text-moon-mist text-[10px] tracking-wider mb-1">狼人</div>
               <div className="font-display text-xl text-blood-400">{wolves}</div>
-              {hasWolfKing && (
-                <div className="text-[10px] text-moon-mist mt-0.5">普狼×{room.config.wolfCount} 狼王×1</div>
+              {wolfExtraRoles.length > 0 && (
+                <div className="text-[10px] text-moon-mist mt-0.5">
+                  普狼×{room.config.wolfCount} {wolfExtraRoles.map(role => `${ROLES[role].name}×1`).join(' ')}
+                </div>
               )}
             </div>
             <div className="bg-forest-50/50 rounded-xl p-3">
@@ -235,7 +241,7 @@ export function Room() {
             <div className="absolute inset-0 bg-gradient-to-r from-blood-700 via-blood to-blood-700 group-hover:from-blood-600 group-hover:via-blood-500 group-hover:to-blood-600 group-disabled:from-forest-50 group-disabled:via-forest-50 group-disabled:to-forest-50 transition-all" />
             <div className="absolute inset-0 opacity-0 group-hover:opacity-100 group-disabled:opacity-0 transition-opacity bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,0.1),transparent_70%)]" />
             <span className="relative z-10 text-white group-disabled:text-moon-mist">
-              {canStart ? '开始游戏' : `需要 ${MIN_PLAYERS - room.players.length} 人`}
+              {canStart ? '开始游戏' : !allOnline ? '等待离线玩家' : `需要 ${MIN_PLAYERS - room.players.length} 人`}
             </span>
           </button>
         ) : (
@@ -249,7 +255,7 @@ export function Room() {
 
         {!canStart && isHost && (
           <p className="text-center text-moon-mist text-xs mt-2">
-            至少需要 {MIN_PLAYERS} 名玩家
+            {!allOnline ? '所有玩家在线后才能开始' : `至少需要 ${MIN_PLAYERS} 名玩家`}
           </p>
         )}
       </div>

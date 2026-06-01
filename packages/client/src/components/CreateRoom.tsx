@@ -1,10 +1,14 @@
 import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { Role, ROLES, ROLE_PRESETS, RoomConfig, DEFAULT_ROOM_CONFIG, MIN_PLAYERS, MAX_PLAYERS, getCampCounts as calcCampCounts } from '@werewolf/shared';
+import {
+  Role, ROLES, ROLE_PRESETS, RoomConfig, DEFAULT_ROOM_CONFIG, MIN_PLAYERS, MAX_PLAYERS,
+  canBeHybridRole, getCampCounts as calcCampCounts, isGodRole, isWolfRole
+} from '@werewolf/shared';
 
-const GOD_ROLES = [Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD];
-const WOLF_EXTRAS = [Role.WOLF_KING];
-const HYBRIDABLE_ROLES = [Role.HUNTER, Role.GUARD];
+const ALL_ROLES = Object.values(Role);
+const GOD_ROLES = ALL_ROLES.filter(role => isGodRole(role));
+const WOLF_EXTRAS = ALL_ROLES.filter(role => isWolfRole(role) && role !== Role.WEREWOLF);
+const HYBRIDABLE_ROLES = ALL_ROLES.filter(role => canBeHybridRole(role));
 
 interface CustomConfig {
   maxPlayers: number;
@@ -35,6 +39,7 @@ export function CreateRoom() {
     ? (() => { const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!; return { maxPlayers: p.playerCount, roles: p.roles, wolfCount: p.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime, hybridRoles: p.hybridRoles }; })()
     : toRoomConfig(custom);
   const currentCounts = calcCampCounts(currentConfig);
+  const enabledWolfExtras = [...custom.enabledExtras].filter(role => isWolfRole(role)).length;
 
   // --- Validation ---
   const getValidation = () => {
@@ -116,7 +121,16 @@ export function CreateRoom() {
                       selectedPreset === preset.id ? 'bg-blood/15 border border-blood/30 ring-1 ring-blood/20' : 'glass hover:bg-white/[0.06]'
                     }`}>
                     <div className="font-display text-xl text-moon">{preset.name}</div>
-                    <div className="text-[10px] text-moon-mist mt-1">{preset.playerCount}人 · {preset.wolfCount + (preset.roles.includes(Role.WOLF_KING) ? 1 : 0)}狼</div>
+                    <div className="text-[10px] text-moon-mist mt-1">
+                      {preset.playerCount}人 · {calcCampCounts({
+                        maxPlayers: preset.playerCount,
+                        roles: preset.roles,
+                        wolfCount: preset.wolfCount,
+                        voteTime: DEFAULT_ROOM_CONFIG.voteTime,
+                        roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime,
+                        hybridRoles: preset.hybridRoles
+                      }).wolves}狼
+                    </div>
                     {selectedPreset === preset.id && <div className="absolute top-3 right-3 w-2 h-2 rounded-full bg-blood animate-breathe" />}
                   </button>
                 ))}
@@ -140,9 +154,11 @@ export function CreateRoom() {
                       {Array.from({ length: p.wolfCount }).map((_, i) => (
                         <span key={`w${i}`} className="text-xs px-2.5 py-1 rounded-lg bg-blood/10 text-blood-400">狼人</span>
                       ))}
-                      {p.roles.includes(Role.WOLF_KING) && (
-                        <span className="text-xs px-2.5 py-1 rounded-lg bg-blood/10 text-blood-400">👑 狼王</span>
-                      )}
+                      {p.roles.filter(role => isWolfRole(role) && role !== Role.WEREWOLF).map(role => (
+                        <span key={role} className="text-xs px-2.5 py-1 rounded-lg bg-blood/10 text-blood-400">
+                          {getRoleEmoji(role)} {ROLES[role].name}
+                        </span>
+                      ))}
                     </div>
                   </div>
 
@@ -218,7 +234,7 @@ export function CreateRoom() {
                       className="w-8 h-8 rounded-lg bg-forest-50/50 flex items-center justify-center text-moon-dim hover:text-moon disabled:opacity-30 transition-colors">−</button>
                     <span className="font-display text-xl text-blood-400 w-6 text-center">{custom.wolfCount}</span>
                     <button onClick={() => adjustWolf(1)}
-                      disabled={custom.wolfCount >= Math.floor((custom.maxPlayers - 1) / 2) - (custom.enabledExtras.has(Role.WOLF_KING) ? 1 : 0)}
+                      disabled={custom.wolfCount >= Math.floor((custom.maxPlayers - 1) / 2) - enabledWolfExtras}
                       className="w-8 h-8 rounded-lg bg-forest-50/50 flex items-center justify-center text-moon-dim hover:text-moon disabled:opacity-30 transition-colors">+</button>
                   </div>
                 </div>
@@ -333,9 +349,5 @@ export function CreateRoom() {
 }
 
 function getRoleEmoji(role: Role): string {
-  const emojis: Record<Role, string> = {
-    [Role.VILLAGER]: '👤', [Role.WEREWOLF]: '🐺', [Role.WOLF_KING]: '👑',
-    [Role.SEER]: '🔮', [Role.WITCH]: '🧪', [Role.HUNTER]: '🔫', [Role.GUARD]: '🛡️',
-  };
-  return emojis[role] || '❓';
+  return ROLES[role]?.icon || '❓';
 }

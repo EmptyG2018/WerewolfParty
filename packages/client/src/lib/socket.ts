@@ -1,11 +1,11 @@
-import { io } from 'socket.io-client';
-import { ClientToServerEvents, ServerToClientEvents } from '@werewolf/shared';
+import { io, Socket } from 'socket.io-client';
+import type { ClientToServerEvents, ServerToClientEvents } from '@werewolf/shared';
 
-const URL = import.meta.env.DEV
+export const SERVER_URL = import.meta.env.DEV
   ? 'http://localhost:3001'
   : window.location.origin;
 
-export const socket = io(URL, {
+export const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(SERVER_URL, {
   autoConnect: true,
   reconnection: true,
   reconnectionAttempts: 5,

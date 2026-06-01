@@ -1,28 +1,51 @@
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { GamePhase, Role, ROLES } from '@werewolf/shared';
+import { GamePhase, RoleAbility, ROLES, isWolfRole, roleHasAbility } from '@werewolf/shared';
+
+type PendingConfirm = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  tone: 'danger' | 'safe';
+  run: () => void;
+};
 
 export function Game() {
   const {
     room, myId, myRole, gameState, speaking, seerResult, error,
-    roleConfirmed, confirmedPlayers, wolfVotes, wolfSelections,
+    roleConfirmed, confirmedPlayers, wolfVotes, wolfSelections, wolfTeam, deathEvents, voteResult,
     confirmRole, werewolfKill, wolfConfirmVote, seerCheck, witchSave, witchPoison, guardProtect,
-    vote, speakingDone, hunterShoot, wolfKingShoot, setSeerResult
+    vote, speakingDone, hunterShoot, wolfKingShoot, pauseGame, resumeGame, setSeerResult
   } = useGameStore();
 
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [transitionPhase, setTransitionPhase] = useState<GamePhase | null>(null);
 
-  // Client-side countdown for phase timer
+  // Server-synced countdown from phaseEndsAt.
   useEffect(() => {
-    if (!gameState || gameState.phaseTimer <= 0) return;
-    const interval = setInterval(() => {
+    if (!gameState || gameState.paused || !gameState.phaseEndsAt) return;
+    const syncTimer = () => {
       useGameStore.setState((state) => {
-        if (!state.gameState || state.gameState.phaseTimer <= 0) return state;
-        return { gameState: { ...state.gameState, phaseTimer: state.gameState.phaseTimer - 1 } };
+        if (!state.gameState || !state.gameState.phaseEndsAt) return state;
+        const phaseTimer = Math.max(0, Math.ceil((state.gameState.phaseEndsAt - Date.now()) / 1000));
+        if (phaseTimer === state.gameState.phaseTimer) return state;
+        return { gameState: { ...state.gameState, phaseTimer } };
       });
-    }, 1000);
+    };
+    syncTimer();
+    const interval = setInterval(() => {
+      syncTimer();
+    }, 250);
     return () => clearInterval(interval);
-  }, [gameState?.phase, gameState?.phaseTimer]);
+  }, [gameState?.phase, gameState?.phaseEndsAt, gameState?.paused]);
+
+  useEffect(() => {
+    if (!gameState || gameState.paused || gameState.phase === GamePhase.ROLE_CONFIRM || gameState.phase === GamePhase.GAME_OVER) return;
+    setTransitionPhase(gameState.phase);
+    const timeout = setTimeout(() => setTransitionPhase(null), 1200);
+    return () => clearTimeout(timeout);
+  }, [gameState?.phase]);
 
   if (!room || !gameState || !myRole) return null;
 
@@ -30,6 +53,48 @@ export function Game() {
   const isAlive = myPlayer?.status === 'alive';
   const currentPhase = gameState.phase;
   const isNight = currentPhase.startsWith('night_');
+  const isHost = room.hostId === myId;
+  const isPaused = gameState.paused;
+
+  const getPlayerName = (playerId: string | null) => {
+    if (!playerId) return '无人';
+    const player = room.players.find(p => p.id === playerId);
+    return player ? `${player.seatIndex + 1}号 ${player.name}` : '未知玩家';
+  };
+
+  const getDeathReasonName = (reason: 'killed' | 'voted' | 'poisoned' | 'shot') => {
+    const names = {
+      killed: '狼人袭击',
+      voted: '投票放逐',
+      poisoned: '女巫毒杀',
+      shot: '开枪带走'
+    };
+    return names[reason];
+  };
+
+  const getDeathReasonClass = (reason: 'killed' | 'voted' | 'poisoned' | 'shot') => {
+    switch (reason) {
+      case 'poisoned': return 'bg-poison/15 text-poison border-poison/20';
+      case 'voted': return 'bg-gold/15 text-gold border-gold/20';
+      case 'shot': return 'bg-amber-500/15 text-amber-300 border-amber-500/20';
+      default: return 'bg-blood/15 text-blood-400 border-blood/20';
+    }
+  };
+
+  const getLatestDeath = (playerId: string) => {
+    return [...deathEvents].reverse().find(event => event.playerId === playerId);
+  };
+
+  const confirmThen = (confirm: Omit<PendingConfirm, 'run'>, run: () => void) => {
+    setPendingConfirm({
+      ...confirm,
+      run: () => {
+        run();
+        setSelectedTarget(null);
+        setPendingConfirm(null);
+      }
+    });
+  };
 
   const getPhaseName = (phase: GamePhase) => {
     const names: Record<GamePhase, string> = {
@@ -67,6 +132,24 @@ export function Game() {
     return emojis[phase] || '🌙';
   };
 
+  const getPhaseSubtitle = (phase: GamePhase) => {
+    const subtitles: Record<GamePhase, string> = {
+      [GamePhase.WAITING]: '等待玩家入座',
+      [GamePhase.ROLE_CONFIRM]: '确认你的身份牌',
+      [GamePhase.NIGHT_WEREWOLF]: '狼人请行动',
+      [GamePhase.NIGHT_SEER]: '预言家请查验',
+      [GamePhase.NIGHT_WITCH]: '女巫请抉择',
+      [GamePhase.NIGHT_GUARD]: '守卫请守护',
+      [GamePhase.DAY_ANNOUNCE]: '公布昨夜结果',
+      [GamePhase.DAY_SPEAKING]: '按顺序发言',
+      [GamePhase.DAY_VOTE]: '所有存活玩家投票',
+      [GamePhase.HUNTER_SHOOT]: '猎人可发动技能',
+      [GamePhase.WOLF_KING_SHOOT]: '狼王可发动技能',
+      [GamePhase.GAME_OVER]: '揭示所有身份'
+    };
+    return subtitles[phase] || '';
+  };
+
   // 狼人是否已确认投票
   const myWolfVote = myId ? wolfVotes[myId] : undefined;
   const myWolfSelection = myId ? wolfSelections[myId] : undefined;
@@ -74,12 +157,17 @@ export function Game() {
 
   const handleAction = () => {
     if (!selectedTarget) return;
+    const targetName = getPlayerName(selectedTarget);
     switch (currentPhase) {
       case GamePhase.NIGHT_WEREWOLF:
-        if (myRole === Role.WEREWOLF || myRole === Role.WOLF_KING) {
+        if (roleHasAbility(myRole, RoleAbility.WEREWOLF_KILL)) {
           if (myWolfSelection === selectedTarget) {
-            // 已选择此目标，确认投票
-            wolfConfirmVote();
+            confirmThen({
+              title: '确认狼刀',
+              message: `确认投票击杀 ${targetName}？确认后本轮不能修改。`,
+              confirmLabel: '确认击杀',
+              tone: 'danger'
+            }, wolfConfirmVote);
           } else {
             // 新选择
             werewolfKill(selectedTarget);
@@ -87,37 +175,64 @@ export function Game() {
         }
         return;
       case GamePhase.NIGHT_SEER:
-        if (myRole === Role.SEER) seerCheck(selectedTarget);
+        if (roleHasAbility(myRole, RoleAbility.SEER_CHECK)) seerCheck(selectedTarget);
         break;
       case GamePhase.NIGHT_WITCH:
-        if (myRole === Role.WITCH) witchPoison(selectedTarget);
-        break;
+        if (roleHasAbility(myRole, RoleAbility.WITCH_POISON)) {
+          confirmThen({
+            title: '使用毒药',
+            message: `确认毒杀 ${targetName}？毒药每局只能使用一次。`,
+            confirmLabel: '确认毒杀',
+            tone: 'danger'
+          }, () => witchPoison(selectedTarget));
+        }
+        return;
       case GamePhase.NIGHT_GUARD:
-        if (myRole === Role.GUARD) guardProtect(selectedTarget);
+        if (roleHasAbility(myRole, RoleAbility.GUARD_PROTECT)) guardProtect(selectedTarget);
         break;
       case GamePhase.DAY_VOTE:
-        vote(selectedTarget);
-        break;
+        confirmThen({
+          title: '确认投票',
+          message: `确认投给 ${targetName}？`,
+          confirmLabel: '确认投票',
+          tone: 'danger'
+        }, () => vote(selectedTarget));
+        return;
       case GamePhase.HUNTER_SHOOT:
-        if (myRole === Role.HUNTER) hunterShoot(selectedTarget);
-        break;
+        if (roleHasAbility(myRole, RoleAbility.HUNTER_SHOOT)) {
+          confirmThen({
+            title: '猎人开枪',
+            message: `确认带走 ${targetName}？`,
+            confirmLabel: '确认开枪',
+            tone: 'danger'
+          }, () => hunterShoot(selectedTarget));
+        }
+        return;
       case GamePhase.WOLF_KING_SHOOT:
-        if (myRole === Role.WOLF_KING) wolfKingShoot(selectedTarget);
-        break;
+        if (roleHasAbility(myRole, RoleAbility.WOLF_KING_SHOOT)) {
+          confirmThen({
+            title: '狼王开枪',
+            message: `确认带走 ${targetName}？`,
+            confirmLabel: '确认开枪',
+            tone: 'danger'
+          }, () => wolfKingShoot(selectedTarget));
+        }
+        return;
     }
     setSelectedTarget(null);
   };
 
   const canAct = () => {
+    if (isPaused) return false;
+    if (currentPhase === GamePhase.HUNTER_SHOOT) return roleHasAbility(myRole, RoleAbility.HUNTER_SHOOT) && !isAlive;
+    if (currentPhase === GamePhase.WOLF_KING_SHOOT) return roleHasAbility(myRole, RoleAbility.WOLF_KING_SHOOT) && !isAlive;
     if (!isAlive) return false;
     switch (currentPhase) {
-      case GamePhase.NIGHT_WEREWOLF: return myRole === Role.WEREWOLF || myRole === Role.WOLF_KING;
-      case GamePhase.NIGHT_SEER: return myRole === Role.SEER;
-      case GamePhase.NIGHT_WITCH: return myRole === Role.WITCH;
-      case GamePhase.NIGHT_GUARD: return myRole === Role.GUARD;
+      case GamePhase.NIGHT_WEREWOLF: return roleHasAbility(myRole, RoleAbility.WEREWOLF_KILL);
+      case GamePhase.NIGHT_SEER: return roleHasAbility(myRole, RoleAbility.SEER_CHECK);
+      case GamePhase.NIGHT_WITCH: return roleHasAbility(myRole, RoleAbility.WITCH_POISON) || roleHasAbility(myRole, RoleAbility.WITCH_SAVE);
+      case GamePhase.NIGHT_GUARD: return roleHasAbility(myRole, RoleAbility.GUARD_PROTECT);
       case GamePhase.DAY_VOTE: return true;
-      case GamePhase.HUNTER_SHOOT: return myRole === Role.HUNTER;
-      case GamePhase.WOLF_KING_SHOOT: return myRole === Role.WOLF_KING;
       default: return false;
     }
   };
@@ -153,16 +268,50 @@ export function Game() {
   const currentSpeakerId = speaking?.order[speaking?.currentIndex ?? -1];
   const isMyTurn = currentSpeakerId === myId;
   const hasSpoken = speaking?.confirmed.includes(myId ?? '') ?? false;
-  const speakingProgress = speaking ? `${speaking.currentIndex}/${speaking.order.length}` : '';
+  const speakingProgress = speaking ? `${Math.min(speaking.currentIndex + 1, speaking.order.length)}/${speaking.order.length}` : '';
+  const currentSpeakerName = currentSpeakerId ? getPlayerName(currentSpeakerId) : '';
 
   // 狼人投票相关
-  const isWolf = myRole === Role.WEREWOLF || myRole === Role.WOLF_KING;
+  const isWolf = isWolfRole(myRole);
   const isWolfPhase = currentPhase === GamePhase.NIGHT_WEREWOLF;
+  const currentDayDeaths = deathEvents.filter(event => event.day === gameState.day);
+  const sortedVoteResult = voteResult
+    ? Object.entries(voteResult.votes).sort((a, b) => b[1] - a[1])
+    : [];
+  const wolfTargetCounts = Object.values(wolfVotes).reduce<Record<string, number>>((counts, targetId) => {
+    counts[targetId] = (counts[targetId] || 0) + 1;
+    return counts;
+  }, {});
+  const wolfTopVotes = Math.max(0, ...Object.values(wolfTargetCounts));
+  const wolfTopTargets = Object.entries(wolfTargetCounts)
+    .filter(([, count]) => count === wolfTopVotes && count > 0)
+    .map(([targetId]) => targetId);
 
   return (
     <div className={`flex flex-col min-h-dvh relative transition-colors duration-1000 ${
       isNight ? 'bg-forest' : 'bg-forest'
     }`}>
+      {/* Phase transition */}
+      {transitionPhase && (
+        <div className="fixed inset-0 z-[55] flex items-center justify-center bg-forest/85 backdrop-blur-sm pointer-events-none animate-fade-in">
+          <div className="text-center animate-moonrise">
+            <div className={`mx-auto mb-5 w-20 h-20 rounded-full flex items-center justify-center text-4xl ${
+              transitionPhase.toString().startsWith('night_')
+                ? 'bg-indigo-950/40 text-moon shadow-lg shadow-indigo-950/30'
+                : 'bg-gold/15 text-gold shadow-lg shadow-gold/10'
+            }`}>
+              {getPhaseEmoji(transitionPhase)}
+            </div>
+            <div className="font-display text-3xl text-moon text-shadow-glow">
+              {getPhaseName(transitionPhase)}
+            </div>
+            <div className="mt-2 text-sm text-moon-dim tracking-wider">
+              {getPhaseSubtitle(transitionPhase)}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Night atmosphere */}
       {isNight && (
         <>
@@ -184,7 +333,7 @@ export function Game() {
             <div className="glass rounded-3xl p-6 text-center space-y-5">
               {/* Role emoji */}
               <div className="text-6xl">
-                {ROLES[myRole].camp === 'werewolf' ? '🐺' : '👤'}
+                {isWolfRole(myRole) ? '🐺' : '👤'}
               </div>
 
               {/* Role name */}
@@ -195,11 +344,11 @@ export function Game() {
 
               {/* Camp badge */}
               <div className={`inline-block px-4 py-1.5 rounded-full text-xs font-medium tracking-wide ${
-                ROLES[myRole].camp === 'werewolf'
+                isWolfRole(myRole)
                   ? 'bg-blood/20 text-blood-400 border border-blood/30'
                   : 'bg-heal/20 text-heal-400 border border-heal/30'
               }`}>
-                {ROLES[myRole].camp === 'werewolf' ? '狼人阵营' : '好人阵营'}
+                {isWolfRole(myRole) ? '狼人阵营' : '好人阵营'}
               </div>
 
               {/* Description */}
@@ -226,9 +375,10 @@ export function Game() {
               ) : (
                 <button
                   onClick={confirmRole}
+                  disabled={isPaused}
                   className="w-full py-3.5 rounded-xl font-display text-base text-white
                     bg-gradient-to-r from-heal-dark to-heal active:scale-[0.97]
-                    transition-transform shadow-lg shadow-heal/20"
+                    transition-transform shadow-lg shadow-heal/20 disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   确认身份
                 </button>
@@ -270,6 +420,18 @@ export function Game() {
             </div>
 
             <div className="flex items-center gap-2">
+              {isHost && currentPhase !== GamePhase.GAME_OVER && (
+                <button
+                  onClick={isPaused ? resumeGame : pauseGame}
+                  className={`px-3 py-2 rounded-xl text-xs font-display tracking-wide border transition-colors ${
+                    isPaused
+                      ? 'bg-heal/15 text-heal-400 border-heal/25'
+                      : 'bg-gold/10 text-gold border-gold/20'
+                  }`}
+                >
+                  {isPaused ? '恢复' : '暂停'}
+                </button>
+              )}
               <div className="text-right">
                 <div className="text-[10px] text-moon-dim tracking-wider">身份</div>
                 <div className="font-display text-sm text-blood-400">
@@ -277,34 +439,89 @@ export function Game() {
                 </div>
               </div>
               <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm ${
-                ROLES[myRole].camp === 'werewolf'
+                isWolfRole(myRole)
                   ? 'bg-blood/20 text-blood-400'
                   : 'bg-heal/20 text-heal-400'
               }`}>
-                {ROLES[myRole].camp === 'werewolf' ? '🐺' : '👤'}
+                {isWolfRole(myRole) ? '🐺' : '👤'}
               </div>
             </div>
           </div>
         </div>
       </header>
 
+      {/* Phase result summary */}
+      {(currentPhase === GamePhase.DAY_ANNOUNCE || voteResult) && currentPhase !== GamePhase.GAME_OVER && (
+        <div className="px-4 py-1.5 relative z-10">
+          <div className="glass-dark rounded-xl px-4 py-3 space-y-2">
+            {currentPhase === GamePhase.DAY_ANNOUNCE && (
+              <div>
+                <div className="text-[10px] text-moon-dim tracking-wider mb-1">昨夜结果</div>
+                {currentDayDeaths.length === 0 ? (
+                  <div className="font-display text-base text-heal-400">平安夜，没有人死亡</div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {currentDayDeaths.map(event => (
+                      <div key={`${event.playerId}-${event.reason}-${event.day}`} className="flex items-center justify-between gap-2">
+                        <span className="text-sm text-moon truncate">{getPlayerName(event.playerId)}</span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full border shrink-0 ${getDeathReasonClass(event.reason)}`}>
+                          {getDeathReasonName(event.reason)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {voteResult && (
+              <div className="pt-2 border-t border-white/5">
+                <div className="text-[10px] text-moon-dim tracking-wider mb-1">投票结果</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {sortedVoteResult.length === 0 ? (
+                    <span className="text-sm text-moon-mist">无人投票</span>
+                  ) : sortedVoteResult.map(([playerId, count]) => (
+                    <span key={playerId} className={`text-xs px-2 py-1 rounded-lg ${
+                      playerId === voteResult.eliminated ? 'bg-blood/20 text-blood-400' : 'bg-white/[0.05] text-moon-dim'
+                    }`}>
+                      {getPlayerName(playerId)} {count}票
+                    </span>
+                  ))}
+                </div>
+                <div className="text-sm text-moon mt-2">
+                  {voteResult.eliminated ? `${getPlayerName(voteResult.eliminated)} 出局` : '平票，无人出局'}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Speaking Progress Bar */}
       {isSpeakingPhase && speaking && (
         <div className="px-4 py-1.5 relative z-10">
-          <div className="glass rounded-xl px-4 py-2 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-moon-dim">发言进度</span>
-              <span className="font-display text-sm text-moon">{speakingProgress}</span>
+          <div className="glass rounded-xl px-4 py-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] text-moon-dim tracking-wider">当前发言</div>
+                <div className="font-display text-sm text-moon truncate">{currentSpeakerName}</div>
+              </div>
+              <div className="text-right">
+                <div className="text-[10px] text-moon-dim tracking-wider">进度</div>
+                <div className="font-display text-sm text-moon">{speakingProgress}</div>
+              </div>
+              <div className={`font-display text-lg ${gameState.phaseTimer <= 5 ? 'text-blood-400 animate-breathe' : 'text-gold'}`}>
+                {gameState.phaseTimer}s
+              </div>
             </div>
             {isMyTurn && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-blood/20 text-blood-400 animate-breathe">
+              <div className="mt-2 text-center text-xs px-2 py-1 rounded-lg bg-blood/20 text-blood-400 animate-breathe">
                 轮到你了
-              </span>
+              </div>
             )}
             {hasSpoken && !isMyTurn && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-heal/20 text-heal-400">
+              <div className="mt-2 text-center text-xs px-2 py-1 rounded-lg bg-heal/20 text-heal-400">
                 已发言
-              </span>
+              </div>
             )}
           </div>
         </div>
@@ -318,9 +535,11 @@ export function Game() {
               const isDead = player.status === 'dead';
               const isSelected = player.id === selectedTarget;
               const isMe = player.id === myId;
-              const isTargetable = !isDead && !isMe && isAlive && canAct();
+              const isTargetable = !isDead && !isMe && canAct();
+              const isOffline = !player.online;
               const isCurrentSpeaker = isSpeakingPhase && player.id === currentSpeakerId;
               const hasPlayerSpoken = speaking?.confirmed.includes(player.id) ?? false;
+              const latestDeath = getLatestDeath(player.id);
 
               // 狼人投票：显示已确认投票数
               const wolfVotesOnThis = isWolf && isWolfPhase
@@ -335,6 +554,8 @@ export function Game() {
                   className={`animate-slide-up relative flex items-center gap-3 p-3 rounded-xl transition-all duration-200 text-left ${
                     isDead
                       ? 'opacity-40 bg-forest-50/30'
+                      : isOffline
+                      ? 'opacity-60 bg-forest-50/30 border border-white/[0.04]'
                       : isSelected
                       ? 'bg-blood/15 border border-blood/30 ring-1 ring-blood/20'
                       : isCurrentSpeaker
@@ -362,7 +583,7 @@ export function Game() {
                         ? 'bg-gradient-to-br from-blood-600 to-blood-800 text-white'
                         : 'bg-gradient-to-br from-forest-50 to-forest-100 text-moon-dim'
                     }`}>
-                      {isDead ? '💀' : player.name.charAt(0)}
+                      {isDead ? '💀' : isOffline ? '…' : player.name.charAt(0)}
                     </div>
                     <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-forest-100 flex items-center justify-center text-[8px] text-moon-dim font-bold border border-forest-50/30">
                       {player.seatIndex + 1}
@@ -385,7 +606,19 @@ export function Game() {
                       )}
                     </div>
                     <div className="text-[10px] text-moon-mist mt-0.5">
-                      {isDead ? '已阵亡' : isCurrentSpeaker ? '🎤 正在发言' : hasPlayerSpoken ? '已发言' : isMe ? ROLES[myRole].name : ''}
+                      {isDead && latestDeath
+                        ? getDeathReasonName(latestDeath.reason)
+                        : isDead
+                        ? '已阵亡'
+                        : isOffline
+                        ? '离线'
+                        : isCurrentSpeaker
+                        ? '🎤 正在发言'
+                        : hasPlayerSpoken
+                        ? '已发言'
+                        : isMe
+                        ? ROLES[myRole].name
+                        : ''}
                     </div>
                   </div>
 
@@ -404,7 +637,7 @@ export function Game() {
                     </div>
                   )}
                   {!isTargetable && !isCurrentSpeaker && !isDead && (
-                    <div className="w-1.5 h-1.5 rounded-full bg-heal animate-breathe shrink-0" />
+                    <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isOffline ? 'bg-moon-mist' : 'bg-heal animate-breathe'}`} />
                   )}
                 </button>
               );
@@ -418,12 +651,20 @@ export function Game() {
                 <span className="text-xs">🐺</span>
                 <span className="text-[10px] text-blood-400 tracking-wider">狼队投票</span>
                 <span className="ml-auto text-[10px] text-moon-dim">
-                  {Object.keys(wolfVotes).length}/{room.players.filter(p => p.role && (p.role === Role.WEREWOLF || p.role === Role.WOLF_KING) && p.status === 'alive').length} 已确认
+                  {Object.keys(wolfVotes).length}/{room.players.filter(p => wolfTeam.includes(p.id) && p.status === 'alive').length} 已确认
                 </span>
               </div>
+              {wolfTopTargets.length > 0 && (
+                <div className="mb-2 rounded-lg bg-blood/10 border border-blood/15 px-2 py-1.5">
+                  <div className="text-[10px] text-blood-300">
+                    当前最高票：{wolfTopTargets.map(getPlayerName).join('、')}
+                    {wolfTopTargets.length > 1 ? '，平票将随机结算' : ''}
+                  </div>
+                </div>
+              )}
               <div className="space-y-1">
                 {room.players
-                  .filter(p => p.role && (p.role === Role.WEREWOLF || p.role === Role.WOLF_KING))
+                  .filter(p => wolfTeam.includes(p.id))
                   .map(wolf => {
                     const confirmedVote = wolfVotes[wolf.id];
                     const selection = wolfSelections[wolf.id];
@@ -440,7 +681,11 @@ export function Game() {
                         <span className="text-moon-mist">→</span>
                         <span className={targetName ? (isConfirmed ? 'text-moon' : 'text-moon-dim') : 'text-moon-mist'}>
                           {targetName || '未选择'}
-                          {targetName && !isConfirmed && ' (选)'}
+                        </span>
+                        <span className={`ml-auto px-1.5 py-0.5 rounded text-[9px] ${
+                          isConfirmed ? 'bg-heal/15 text-heal-400' : selection ? 'bg-gold/15 text-gold' : 'bg-white/[0.04] text-moon-mist'
+                        }`}>
+                          {isConfirmed ? '已确认' : selection ? '已选择' : '等待'}
                         </span>
                       </div>
                     );
@@ -452,7 +697,7 @@ export function Game() {
       </div>
 
       {/* Seer Result Modal */}
-      {myRole === Role.SEER && seerResult && (
+      {roleHasAbility(myRole, RoleAbility.SEER_CHECK) && seerResult && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm animate-fade-in">
           <div className="glass-dark rounded-3xl p-6 w-full max-w-xs text-center animate-moonrise">
             <div className="text-4xl mb-4">🔮</div>
@@ -482,6 +727,7 @@ export function Game() {
         <div className="px-4 pb-safe pt-2 pb-4 relative z-20 animate-slide-in-bottom">
           <button
             onClick={speakingDone}
+            disabled={isPaused}
             className="w-full py-4 rounded-2xl font-display text-lg tracking-wide text-white bg-gradient-to-r from-gold-dark via-gold to-gold-dark active:scale-[0.97] transition-transform"
           >
             发言完毕
@@ -522,10 +768,16 @@ export function Game() {
             </div>
 
             <div className="flex gap-2">
-              {myRole === Role.WITCH && currentPhase === GamePhase.NIGHT_WITCH && (
+              {roleHasAbility(myRole, RoleAbility.WITCH_SAVE) && currentPhase === GamePhase.NIGHT_WITCH && (
                 <button
-                  onClick={witchSave}
-                  className="px-5 py-3.5 rounded-xl bg-gradient-to-r from-heal-dark to-heal text-white font-display text-sm shrink-0 active:scale-95 transition-transform"
+                  onClick={() => confirmThen({
+                    title: '使用解药',
+                    message: '确认使用解药？解药每局只能使用一次。',
+                    confirmLabel: '确认救人',
+                    tone: 'safe'
+                  }, witchSave)}
+                  disabled={isPaused}
+                  className="px-5 py-3.5 rounded-xl bg-gradient-to-r from-heal-dark to-heal text-white font-display text-sm shrink-0 active:scale-95 transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   解药 💊
                 </button>
@@ -541,7 +793,7 @@ export function Game() {
                   ) : (
                     <button
                       onClick={handleAction}
-                      disabled={!selectedTarget}
+                      disabled={isPaused || !selectedTarget}
                       className={`flex-1 py-3.5 rounded-xl font-display text-base tracking-wide text-white transition-all duration-200 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r ${getActionColor()}`}
                     >
                       {myWolfSelection === selectedTarget ? '确认投票' : '选择'} {selectedTarget ? room.players.find(p => p.id === selectedTarget)?.name : ''}
@@ -554,7 +806,7 @@ export function Game() {
               {!(isWolfPhase && isWolf) && (
                 <button
                   onClick={handleAction}
-                  disabled={!selectedTarget}
+                  disabled={isPaused || !selectedTarget}
                   className={`flex-1 py-3.5 rounded-xl font-display text-base tracking-wide text-white transition-all duration-200 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r ${getActionColor()}`}
                 >
                   {getActionName()} {selectedTarget ? room.players.find(p => p.id === selectedTarget)?.name : ''}
@@ -566,7 +818,7 @@ export function Game() {
       )}
 
       {/* Dead overlay */}
-      {!isAlive && currentPhase !== GamePhase.GAME_OVER && (
+      {!isAlive && currentPhase !== GamePhase.GAME_OVER && !canAct() && (
         <div className="px-4 pb-safe pt-2 pb-4 relative z-20">
           <div className="glass-dark rounded-2xl p-4 text-center">
             <span className="text-2xl">💀</span>
@@ -601,7 +853,7 @@ export function Game() {
                     } ${player.id === myId ? 'glass border-blood/10' : 'bg-forest-50/30'}`}
                   >
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
-                      player.role === Role.WEREWOLF
+                      player.role !== null && isWolfRole(player.role)
                         ? 'bg-blood/20 text-blood-400'
                         : 'bg-heal/20 text-heal-400'
                     }`}>
@@ -611,7 +863,7 @@ export function Game() {
                       {player.name}
                     </span>
                     <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      player.role === Role.WEREWOLF
+                      player.role !== null && isWolfRole(player.role)
                         ? 'bg-blood/20 text-blood-400'
                         : 'bg-heal/20 text-heal-400'
                     }`}>
@@ -622,12 +874,92 @@ export function Game() {
               </div>
             </div>
 
+            {deathEvents.length > 0 && (
+              <div className="mb-6">
+                <h3 className="text-xs text-moon-dim tracking-wider uppercase mb-3 text-center">死亡时间线</h3>
+                <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                  {deathEvents.map((event, index) => (
+                    <div key={`${event.playerId}-${event.reason}-${event.day}-${index}`} className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-forest-50/30">
+                      <span className="text-xs text-moon-mist">DAY {event.day}</span>
+                      <span className="flex-1 text-sm text-moon truncate">{getPlayerName(event.playerId)}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full border shrink-0 ${getDeathReasonClass(event.reason)}`}>
+                        {getDeathReasonName(event.reason)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <button
               onClick={() => window.location.reload()}
               className="w-full py-4 rounded-2xl bg-gradient-to-r from-blood-700 via-blood to-blood-700 text-white font-display text-lg tracking-wide active:scale-[0.97] transition-transform"
             >
               返回大厅
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Paused overlay */}
+      {isPaused && currentPhase !== GamePhase.GAME_OVER && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-6 bg-forest/90 backdrop-blur-md animate-fade-in">
+          <div className="glass-dark rounded-3xl p-6 w-full max-w-xs text-center animate-moonrise">
+            <div className="mx-auto mb-4 w-14 h-14 rounded-2xl bg-gold/15 text-gold flex items-center justify-center font-display text-2xl">
+              ||
+            </div>
+            <h3 className="font-display text-2xl text-moon mb-2">游戏已暂停</h3>
+            <p className="text-sm text-moon-dim leading-relaxed">
+              等待房主恢复游戏
+            </p>
+            {gameState.remainingMs !== null && (
+              <div className="mt-4 text-xs text-moon-mist">
+                当前阶段剩余 {Math.ceil(gameState.remainingMs / 1000)}s
+              </div>
+            )}
+            {isHost && (
+              <button
+                onClick={resumeGame}
+                className="mt-5 w-full py-3.5 rounded-xl bg-gradient-to-r from-heal-dark to-heal text-white font-display text-base active:scale-[0.97] transition-transform"
+              >
+                恢复游戏
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Confirm modal */}
+      {pendingConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-black/70 backdrop-blur-sm animate-fade-in">
+          <div className="glass-dark rounded-3xl p-5 w-full max-w-xs animate-moonrise">
+            <div className="text-center mb-4">
+              <div className={`mx-auto mb-3 w-11 h-11 rounded-full flex items-center justify-center text-xl ${
+                pendingConfirm.tone === 'danger' ? 'bg-blood/20 text-blood-400' : 'bg-heal/20 text-heal-400'
+              }`}>
+                {pendingConfirm.tone === 'danger' ? '!' : '✓'}
+              </div>
+              <h3 className="font-display text-xl text-moon mb-2">{pendingConfirm.title}</h3>
+              <p className="text-sm text-moon-dim leading-relaxed">{pendingConfirm.message}</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPendingConfirm(null)}
+                className="flex-1 py-3 rounded-xl glass text-moon-dim text-sm active:scale-[0.97] transition-transform"
+              >
+                取消
+              </button>
+              <button
+                onClick={pendingConfirm.run}
+                className={`flex-1 py-3 rounded-xl text-white font-display text-sm active:scale-[0.97] transition-transform ${
+                  pendingConfirm.tone === 'danger'
+                    ? 'bg-gradient-to-r from-blood-700 to-blood'
+                    : 'bg-gradient-to-r from-heal-dark to-heal'
+                }`}
+              >
+                {pendingConfirm.confirmLabel}
+              </button>
+            </div>
           </div>
         </div>
       )}
