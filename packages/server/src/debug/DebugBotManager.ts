@@ -11,6 +11,14 @@ import { GameManager } from '../game/GameManager';
 
 const DEBUG_PLAYER_PREFIX = 'debug_';
 
+export interface DebugPerspective {
+  playerId: string;
+  name: string;
+  seatIndex: number;
+  role: Role | null;
+  isHost: boolean;
+}
+
 export class DebugBotManager {
   constructor(
     private readonly roomManager: RoomManager,
@@ -104,6 +112,29 @@ export class DebugBotManager {
     }
 
     return { acted, phase: gameState.phase };
+  }
+
+  getPerspectives(roomId: string): { players: DebugPerspective[]; wolfTeam: string[] } {
+    const room = this.roomManager.getRoom(roomId);
+    if (!room) return { players: [], wolfTeam: [] };
+
+    const wolfTeam = room.players
+      .filter(player => player.role !== null && isWolfRole(player.role, room.config.hybridRoles))
+      .map(player => player.id);
+
+    return {
+      players: room.players
+        .slice()
+        .sort((a, b) => a.seatIndex - b.seatIndex)
+        .map(player => ({
+          playerId: player.id,
+          name: player.name,
+          seatIndex: player.seatIndex,
+          role: player.role,
+          isHost: player.isHost
+        })),
+      wolfTeam
+    };
   }
 
   private isDebugPlayer(player: Player): boolean {

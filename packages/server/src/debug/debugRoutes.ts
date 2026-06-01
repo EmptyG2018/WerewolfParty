@@ -19,4 +19,9 @@ export function registerDebugRoutes(
     const result = debugBots.runCurrentPhase(req.params.roomId);
     res.json(result);
   });
+
+  app.get('/api/debug/rooms/:roomId/perspectives', (req: Request, res: Response) => {
+    const result = debugBots.getPerspectives(req.params.roomId);
+    res.json(result);
+  });
 }
