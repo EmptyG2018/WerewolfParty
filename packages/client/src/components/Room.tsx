@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { Role, ROLES, MIN_PLAYERS, Player, getCampCounts, getRoleCounts, isWolfRole } from '@werewolf/shared';
+import { Role, ROLES, Player, getCampCounts, getRoleCounts, isWolfRole } from '@werewolf/shared';
 
 export function Room() {
   const { room, myId, startGame, leaveRoom, error, pendingSwapRequest, swapSeat, acceptSwap, rejectSwap } = useGameStore();
@@ -10,7 +10,9 @@ export function Room() {
 
   const isHost = room.hostId === myId;
   const allOnline = room.players.every(p => p.online);
-  const canStart = room.players.length >= MIN_PLAYERS && allOnline;
+  const missingPlayers = Math.max(0, room.config.maxPlayers - room.players.length);
+  const isFull = missingPlayers === 0;
+  const canStart = isFull && allOnline;
 
   const copyRoomId = () => {
     navigator.clipboard.writeText(room.id);
@@ -21,6 +23,7 @@ export function Room() {
   const { wolves, gods, villagers } = getCampCounts(room.config);
   const roleCounts = getRoleCounts(room.config);
   const wolfExtraRoles = room.config.roles.filter(role => isWolfRole(role) && role !== Role.WEREWOLF);
+  const getPlayerNumber = (player: Player) => player.playerNumber ?? player.seatIndex + 1;
 
   // 构建座位表：按座位号排列，null 表示空座
   const seats: (Player | null)[] = Array.from({ length: room.config.maxPlayers }, () => null);
@@ -102,7 +105,7 @@ export function Room() {
                     : 'glass active:scale-[0.97]'
                 } ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
               >
-                {/* 座位号 */}
+                {/* 玩家编号 */}
                 <div className="relative shrink-0">
                   <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold ${
                     isEmpty
@@ -113,9 +116,9 @@ export function Room() {
                   }`}>
                     {isEmpty ? seatIndex + 1 : player.name.charAt(0)}
                   </div>
-                  {/* 座位号角标 */}
+                  {/* 稳定玩家编号角标 */}
                   <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-forest-100 flex items-center justify-center text-[8px] text-moon-dim font-bold border border-forest-50/30">
-                    {seatIndex + 1}
+                    {isEmpty ? seatIndex + 1 : getPlayerNumber(player)}
                   </div>
                   {!isEmpty && player.id === room.hostId && (
                     <div className="absolute -top-1.5 -right-1.5 text-[10px]">👑</div>
@@ -241,7 +244,7 @@ export function Room() {
             <div className="absolute inset-0 bg-gradient-to-r from-blood-700 via-blood to-blood-700 group-hover:from-blood-600 group-hover:via-blood-500 group-hover:to-blood-600 group-disabled:from-forest-50 group-disabled:via-forest-50 group-disabled:to-forest-50 transition-all" />
             <div className="absolute inset-0 opacity-0 group-hover:opacity-100 group-disabled:opacity-0 transition-opacity bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,0.1),transparent_70%)]" />
             <span className="relative z-10 text-white group-disabled:text-moon-mist">
-              {canStart ? '开始游戏' : !allOnline ? '等待离线玩家' : `需要 ${MIN_PLAYERS - room.players.length} 人`}
+              {canStart ? '开始游戏' : !allOnline ? '等待离线玩家' : `还差 ${missingPlayers} 人`}
             </span>
           </button>
         ) : (
@@ -255,7 +258,7 @@ export function Room() {
 
         {!canStart && isHost && (
           <p className="text-center text-moon-mist text-xs mt-2">
-            {!allOnline ? '所有玩家在线后才能开始' : `至少需要 ${MIN_PLAYERS} 名玩家`}
+            {!allOnline ? '所有玩家在线后才能开始' : `需要 ${room.config.maxPlayers} 名玩家满员后才能开始`}
           </p>
         )}
       </div>

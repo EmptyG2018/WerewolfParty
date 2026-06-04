@@ -234,7 +234,7 @@ export const ROLE_PRESETS: RolePreset[] = [
     id: 'preset-12',
     name: '12人进阶局',
     playerCount: 12,
-    roles: [Role.WEREWOLF, Role.WHITE_WOLF_KING, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+    roles: [Role.WEREWOLF, Role.WOLF_KING, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
     wolfCount: 3,
     hybridRoles: []
   }

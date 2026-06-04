@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import {
-  Room, Player, Role, GamePhase, GameState, SpeakingState,
-  ClientToServerEvents, ServerToClientEvents, MIN_PLAYERS,
+  Room, Player, Role, GamePhase, GameState, SpeakingState, DeathReason,
+  ClientToServerEvents, ServerToClientEvents,
   RoleAbility, isWolfRole, roleHasAbility, roleRevealsAsWolf
 } from '@werewolf/shared';
 import { RoomManager } from '../rooms/RoomManager';
@@ -18,6 +18,11 @@ interface ActionContext {
   gameState: GameState;
   player: Player;
 }
+
+type DeathRecord = {
+  playerId: string;
+  reason: DeathReason;
+};
 
 export class GameManager {
   private roomManager: RoomManager;
@@ -68,6 +73,27 @@ export class GameManager {
   private getAliveTarget(room: Room, targetId: string): Player | null {
     const target = room.players.find(p => p.id === targetId);
     return target?.status === 'alive' ? target : null;
+  }
+
+  private getPlayerNumber(player: Player): number {
+    return player.playerNumber ?? player.seatIndex + 1;
+  }
+
+  private hasAliveActorForPhase(room: Room, phase: GamePhase): boolean {
+    const phaseAbilities: Partial<Record<GamePhase, RoleAbility[]>> = {
+      [GamePhase.NIGHT_WEREWOLF]: [RoleAbility.WEREWOLF_KILL],
+      [GamePhase.NIGHT_SEER]: [RoleAbility.SEER_CHECK],
+      [GamePhase.NIGHT_GUARD]: [RoleAbility.GUARD_PROTECT],
+      [GamePhase.NIGHT_WITCH]: [RoleAbility.WITCH_SAVE, RoleAbility.WITCH_POISON]
+    };
+    const abilities = phaseAbilities[phase];
+    if (!abilities) return true;
+
+    return room.players.some(player => {
+      return player.status === 'alive' &&
+        player.role !== null &&
+        abilities.some(ability => roleHasAbility(player.role!, ability));
+    });
   }
 
   getGameState(roomId: string): GameState | undefined {
@@ -145,9 +171,52 @@ export class GameManager {
     this.schedulePhaseTimeout(roomId, 15000, () => {
       const pending = this.pendingHunterShots.get(roomId);
       if (pending?.playerId !== hunterId) return;
+      this.hunterShotsUsed.add(hunterId);
       this.pendingHunterShots.delete(roomId);
       resume();
     });
+  }
+
+  private passHunterShot(roomId: string, hunterId: string): boolean {
+    const pending = this.pendingHunterShots.get(roomId);
+    if (!pending || pending.playerId !== hunterId) return false;
+
+    this.hunterShotsUsed.add(hunterId);
+    this.pendingHunterShots.delete(roomId);
+    this.clearPhaseTimer(roomId);
+    pending.resume();
+    return true;
+  }
+
+  private startLastWords(roomId: string, playerId: string, resume: () => void): void {
+    const gameState = this.gameStates.get(roomId);
+    if (!gameState) {
+      resume();
+      return;
+    }
+    const speaking = { order: [playerId], currentIndex: 0, confirmed: [] };
+    gameState.speaking = speaking;
+    this.emitPhaseChanged(roomId, GamePhase.LAST_WORDS, 30);
+    this.io.to(roomId).emit('game:speakingUpdate', { speaking });
+    this.schedulePhaseTimeout(roomId, 30000, resume);
+  }
+
+  private completeLastWords(roomId: string, playerId?: string): void {
+    const gameState = this.gameStates.get(roomId);
+    if (!gameState || gameState.phase !== GamePhase.LAST_WORDS || !gameState.speaking) return;
+
+    const currentSpeakerId = gameState.speaking.order[gameState.speaking.currentIndex];
+    if (playerId && playerId !== currentSpeakerId) return;
+
+    if (currentSpeakerId && !gameState.speaking.confirmed.includes(currentSpeakerId)) {
+      gameState.speaking.confirmed.push(currentSpeakerId);
+    }
+    this.io.to(roomId).emit('game:speakingUpdate', { speaking: gameState.speaking });
+
+    const callback = this.phaseTimeoutCallbacks.get(roomId);
+    this.clearPhaseTimer(roomId);
+    gameState.speaking = null;
+    callback?.();
   }
 
   /** 清除当前阶段计时器并推进到下一个夜晚子阶段 */
@@ -175,14 +244,21 @@ export class GameManager {
       socket.emit('game:error', { message: '只有房主可以开始游戏' });
       return;
     }
-    if (room.players.length < MIN_PLAYERS) {
-      socket.emit('game:error', { message: `至少需要${MIN_PLAYERS}名玩家` });
+    if (room.players.length !== room.config.maxPlayers) {
+      socket.emit('game:error', { message: `需要${room.config.maxPlayers}名玩家满员后才能开始` });
       return;
     }
     if (room.players.some(player => !player.online)) {
       socket.emit('game:error', { message: '有玩家离线，暂时无法开始游戏' });
       return;
     }
+
+    room.players.forEach(player => {
+      player.role = null;
+      player.status = 'alive';
+      player.voteTarget = null;
+      player.skillUsed = { witchSave: false, witchPoison: false, lastGuardTarget: null };
+    });
 
     this.engine.assignRoles(room);
 
@@ -404,16 +480,22 @@ export class GameManager {
       return;
     }
 
+    const room = this.roomManager.getRoom(roomId);
     const gameState = this.gameStates.get(roomId);
-    if (!gameState) return;
+    if (!room || !gameState) return;
 
     const phase = phases[index];
+    if (!this.hasAliveActorForPhase(room, phase)) {
+      this.runNightPhases(roomId, phases, index + 1);
+      return;
+    }
+
     this.emitPhaseChanged(roomId, phase, 30);
 
     this.schedulePhaseTimeout(roomId, 30000, () => {
       // 狼人阶段超时：用已确认的投票结算（未确认=弃票）
       if (phase === GamePhase.NIGHT_WEREWOLF) {
-        this.resolveWolfPhase(roomId);
+        this.resolveWolfPhase(roomId, true);
       } else {
         this.runNightPhases(roomId, phases, index + 1);
       }
@@ -580,7 +662,7 @@ export class GameManager {
     });
     this.io.to(room.id).emit('game:systemMessage', {
       id: generateMessageId(),
-      content: `${player.seatIndex + 1}号 ${player.name} 自曝，白天流程中断`,
+      content: `${this.getPlayerNumber(player)}号 ${player.name} 自曝，白天流程中断`,
       timestamp: Date.now()
     });
 
@@ -623,7 +705,7 @@ export class GameManager {
     });
     this.io.to(room.id).emit('game:systemMessage', {
       id: generateMessageId(),
-      content: `${player.seatIndex + 1}号 ${player.name} 白狼王自曝，带走 ${target ? `${target.seatIndex + 1}号 ${target.name}` : '一名玩家'}`,
+      content: `${this.getPlayerNumber(player)}号 ${player.name} 白狼王自曝，带走 ${target ? `${this.getPlayerNumber(target)}号 ${target.name}` : '一名玩家'}`,
       timestamp: Date.now()
     });
 
@@ -639,13 +721,16 @@ export class GameManager {
   }
 
   /** 狼人阶段结算：全部弃票=平安夜，平票随机，否则多数票 */
-  private resolveWolfPhase(roomId: string): void {
+  private resolveWolfPhase(roomId: string, timedOut = false): void {
     const room = this.roomManager.getRoom(roomId);
     const votes = this.wolfVotes.get(roomId);
     if (!room) return;
 
     const wolves = room.players.filter(p => p.role !== null && isWolfRole(p.role, room.config.hybridRoles) && p.status === 'alive');
-    const finalTarget = this.resolveWolfVote(votes || new Map(), wolves);
+    const allWolvesConfirmed = wolves.length > 0 && wolves.every(wolf => votes?.has(wolf.id));
+    const finalTarget = timedOut && !allWolvesConfirmed
+      ? this.pickRandomAliveNonWolf(room)
+      : this.resolveWolfVote(votes || new Map(), wolves);
 
     const actions = this.nightActions.get(roomId);
     if (actions && finalTarget) actions.set(Role.WEREWOLF, { targetId: finalTarget });
@@ -674,6 +759,15 @@ export class GameManager {
     return candidates[Math.floor(Math.random() * candidates.length)];
   }
 
+  private pickRandomAliveNonWolf(room: Room): string | null {
+    const candidates = room.players.filter(player =>
+      player.status === 'alive' &&
+      (player.role === null || !isWolfRole(player.role, room.config.hybridRoles))
+    );
+    if (candidates.length === 0) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)].id;
+  }
+
   seerCheck(socket: TypedSocket, targetId: string): void {
     const ctx = this.validateContext(socket, GamePhase.NIGHT_SEER);
     if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.SEER_CHECK) || ctx.player.status === 'dead') return;
@@ -700,6 +794,16 @@ export class GameManager {
     const ctx = this.validateContext(socket, GamePhase.NIGHT_WITCH);
     if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WITCH_SAVE) || ctx.player.status === 'dead') return;
 
+    const actions = this.nightActions.get(ctx.room.id);
+    const killedTargetId = actions?.get(Role.WEREWOLF)?.targetId ?? null;
+    if (!killedTargetId) {
+      socket.emit('game:error', { message: '今晚没有可救目标' });
+      return;
+    }
+    if (killedTargetId === ctx.player.id) {
+      socket.emit('game:error', { message: '女巫不能自救' });
+      return;
+    }
     if (ctx.player.skillUsed.witchSave) {
       socket.emit('game:error', { message: '解药已使用' });
       return;
@@ -712,6 +816,23 @@ export class GameManager {
     ctx.player.skillUsed.witchSave = true;
     ctx.gameState.witchSaveUsed = true;
     this.witchSavedTonight.set(ctx.room.id, true);
+    this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_WITCH);
+  }
+
+  witchPass(socket: TypedSocket): void {
+    const ctx = this.validateContext(socket, GamePhase.NIGHT_WITCH);
+    if (
+      !ctx ||
+      !ctx.player.role ||
+      (
+        !roleHasAbility(ctx.player.role, RoleAbility.WITCH_SAVE) &&
+        !roleHasAbility(ctx.player.role, RoleAbility.WITCH_POISON)
+      ) ||
+      ctx.player.status === 'dead'
+    ) {
+      return;
+    }
+
     this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_WITCH);
   }
 
@@ -795,11 +916,14 @@ export class GameManager {
 
     const result = this.engine.resolveNight(room, gameState, actions, this.witchSavedTonight.get(roomId) ?? false);
 
+    const deathRecords: DeathRecord[] = [];
+
     // 应用死亡
     result.deadPlayerIds.forEach(playerId => {
       const reason = playerId === result.killedPlayerId ? 'killed' : 'poisoned';
       const player = this.engine.killPlayer(room, gameState, playerId, reason);
       if (player) {
+        deathRecords.push({ playerId, reason });
         this.io.to(roomId).emit('game:playerDead', { playerId, reason, day: gameState.day });
       }
     });
@@ -819,24 +943,25 @@ export class GameManager {
 
       this.schedulePhaseTimeout(roomId, 15000, () => {
         gameState.wolfKingCanShoot = false;
-        this.startDayPhase(roomId, result.deadPlayerIds);
+        this.startDayPhase(roomId, deathRecords);
       });
       return;
     }
 
-    this.startDayPhase(roomId, result.deadPlayerIds);
+    this.startDayPhase(roomId, deathRecords);
   }
 
   // ============ 白天阶段 ============
 
-  private startDayPhase(roomId: string, deadPlayers: string[]): void {
+  private startDayPhase(roomId: string, deadPlayers: DeathRecord[]): void {
     const room = this.roomManager.getRoom(roomId);
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
     this.setPhaseClock(gameState, GamePhase.DAY_ANNOUNCE, 5);
     const hunterToShoot = deadPlayers
-      .map(playerId => room.players.find(p => p.id === playerId))
+      .filter(deadPlayer => deadPlayer.reason === 'killed')
+      .map(deadPlayer => room.players.find(p => p.id === deadPlayer.playerId))
       .find(player => player?.role && roleHasAbility(player.role, RoleAbility.HUNTER_SHOOT) && !this.hunterShotsUsed.has(player.id));
 
     if (deadPlayers.length === 0) {
@@ -916,8 +1041,13 @@ export class GameManager {
   }
 
   speakingDone(socket: TypedSocket): void {
-    const ctx = this.validateContext(socket, GamePhase.DAY_SPEAKING);
-    if (!ctx || !ctx.gameState.speaking || ctx.player.status === 'dead') return;
+    const ctx = this.validateContext(socket);
+    if (!ctx || !ctx.gameState.speaking) return;
+    if (ctx.gameState.phase === GamePhase.LAST_WORDS) {
+      this.completeLastWords(ctx.room.id, ctx.player.id);
+      return;
+    }
+    if (ctx.gameState.phase !== GamePhase.DAY_SPEAKING || ctx.player.status === 'dead') return;
 
     const currentSpeakerId = ctx.gameState.speaking.order[ctx.gameState.speaking.currentIndex];
     if (ctx.player.id !== currentSpeakerId) {
@@ -929,8 +1059,13 @@ export class GameManager {
   }
 
   speakingDoneByPlayer(roomId: string, playerId: string): boolean {
-    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.DAY_SPEAKING);
-    if (!ctx || !ctx.gameState.speaking || ctx.player.status === 'dead') return false;
+    const ctx = this.validatePlayerContext(roomId, playerId);
+    if (!ctx || !ctx.gameState.speaking) return false;
+    if (ctx.gameState.phase === GamePhase.LAST_WORDS) {
+      this.completeLastWords(ctx.room.id, ctx.player.id);
+      return true;
+    }
+    if (ctx.gameState.phase !== GamePhase.DAY_SPEAKING || ctx.player.status === 'dead') return false;
 
     const currentSpeakerId = ctx.gameState.speaking.order[ctx.gameState.speaking.currentIndex];
     if (ctx.player.id !== currentSpeakerId) return false;
@@ -967,7 +1102,22 @@ export class GameManager {
     ctx.gameState.votes[ctx.player.id] = targetId;
 
     const alivePlayers = ctx.room.players.filter(p => p.status === 'alive');
-    const allVoted = alivePlayers.every(p => ctx.gameState.votes[p.id]);
+    const allVoted = alivePlayers.every(p => Object.prototype.hasOwnProperty.call(ctx.gameState.votes, p.id));
+
+    if (allVoted) {
+      this.clearPhaseTimer(ctx.room.id);
+      this.resolveVote(ctx.room.id);
+    }
+  }
+
+  abstainVote(socket: TypedSocket): void {
+    const ctx = this.validateContext(socket, GamePhase.DAY_VOTE);
+    if (!ctx || ctx.player.status === 'dead') return;
+
+    ctx.gameState.votes[ctx.player.id] = null;
+
+    const alivePlayers = ctx.room.players.filter(p => p.status === 'alive');
+    const allVoted = alivePlayers.every(p => Object.prototype.hasOwnProperty.call(ctx.gameState.votes, p.id));
 
     if (allVoted) {
       this.clearPhaseTimer(ctx.room.id);
@@ -985,7 +1135,7 @@ export class GameManager {
     ctx.gameState.votes[ctx.player.id] = targetId;
 
     const alivePlayers = ctx.room.players.filter(p => p.status === 'alive');
-    const allVoted = alivePlayers.every(p => ctx.gameState.votes[p.id]);
+    const allVoted = alivePlayers.every(p => Object.prototype.hasOwnProperty.call(ctx.gameState.votes, p.id));
 
     if (allVoted) {
       this.clearPhaseTimer(ctx.room.id);
@@ -999,25 +1149,72 @@ export class GameManager {
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
+    room.players
+      .filter(player => player.status === 'alive')
+      .forEach(player => {
+        if (!Object.prototype.hasOwnProperty.call(gameState.votes, player.id)) {
+          gameState.votes[player.id] = null;
+        }
+      });
     const result = this.engine.resolveVote(gameState.votes);
+    const details = { ...gameState.votes };
+    const historyEntry = {
+      day: gameState.day,
+      votes: details,
+      voteCount: { ...result.voteCount },
+      eliminated: result.eliminatedId,
+      abstained: result.abstained,
+      isTie: result.isTie
+    };
+    const existingHistoryIndex = gameState.voteHistory.findIndex(entry => entry.day === gameState.day);
+    if (existingHistoryIndex >= 0) {
+      gameState.voteHistory[existingHistoryIndex] = historyEntry;
+    } else {
+      gameState.voteHistory.push(historyEntry);
+    }
 
-    this.io.to(roomId).emit('game:voteResult', { votes: result.voteCount, eliminated: result.eliminatedId });
+    this.io.to(roomId).emit('game:voteResult', {
+      votes: result.voteCount,
+      eliminated: result.eliminatedId,
+      abstained: result.abstained,
+      isTie: result.isTie,
+      details
+    });
 
-    if (result.eliminatedId) {
-      const player = this.engine.killPlayer(room, gameState, result.eliminatedId, 'voted');
+    const eliminatedId = result.eliminatedId;
+    if (eliminatedId) {
+      const player = this.engine.killPlayer(room, gameState, eliminatedId, 'voted');
       if (!player) {
         this.afterDeathCheck(roomId);
         return;
       }
-      this.io.to(roomId).emit('game:playerDead', { playerId: result.eliminatedId, reason: 'voted', day: gameState.day });
+      this.io.to(roomId).emit('game:playerDead', { playerId: eliminatedId, reason: 'voted', day: gameState.day });
 
-      if (player.role && roleHasAbility(player.role, RoleAbility.HUNTER_SHOOT)) {
-        this.startHunterShot(roomId, result.eliminatedId, () => this.afterDeathCheck(roomId));
-        return;
-      }
+      this.startLastWords(roomId, eliminatedId, () => {
+        if (player.role && roleHasAbility(player.role, RoleAbility.HUNTER_SHOOT)) {
+          this.startHunterShot(roomId, eliminatedId, () => this.afterDeathCheck(roomId));
+          return;
+        }
+        this.afterDeathCheck(roomId);
+      });
+      return;
     }
 
     this.afterDeathCheck(roomId);
+  }
+
+  // ============ 特殊角色 ============
+
+  hunterPass(socket: TypedSocket): void {
+    const ctx = this.validateContext(socket, GamePhase.HUNTER_SHOOT);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.HUNTER_SHOOT)) return;
+    this.passHunterShot(ctx.room.id, ctx.player.id);
+  }
+
+  hunterPassByPlayer(roomId: string, playerId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId, GamePhase.HUNTER_SHOOT);
+    if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.HUNTER_SHOOT)) return false;
+    return this.passHunterShot(ctx.room.id, ctx.player.id);
   }
 
   // ============ 特殊角色 ============
@@ -1099,7 +1296,10 @@ export class GameManager {
       return;
     }
 
-    this.startDayPhase(ctx.room.id, [ctx.gameState.lastKilledPlayer!, targetId]);
+    this.startDayPhase(ctx.room.id, [
+      { playerId: ctx.gameState.lastKilledPlayer!, reason: 'killed' },
+      { playerId: targetId, reason: 'shot' }
+    ]);
   }
 
   wolfKingShootByPlayer(roomId: string, playerId: string, targetId: string): boolean {
@@ -1123,7 +1323,10 @@ export class GameManager {
       return true;
     }
 
-    this.startDayPhase(ctx.room.id, [ctx.gameState.lastKilledPlayer!, targetId]);
+    this.startDayPhase(ctx.room.id, [
+      { playerId: ctx.gameState.lastKilledPlayer!, reason: 'killed' },
+      { playerId: targetId, reason: 'shot' }
+    ]);
     return true;
   }
 

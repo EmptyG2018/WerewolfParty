@@ -9,6 +9,7 @@ export interface ClientToServerEvents {
   'room:leave': () => void;
   'room:updateConfig': (data: Partial<RoomConfig>) => void;
   'room:start': () => void;
+  'room:reset': () => void;
   'room:swapSeat': (data: { targetSeat: number }) => void;
   'room:acceptSwap': () => void;
   'room:rejectSwap': () => void;
@@ -22,10 +23,13 @@ export interface ClientToServerEvents {
   'game:seerCheck': (data: { targetId: string }) => void;
   'game:witchSave': () => void;
   'game:witchPoison': (data: { targetId: string }) => void;
+  'game:witchPass': () => void;
   'game:guardProtect': (data: { targetId: string }) => void;
   'game:vote': (data: { targetId: string }) => void;
+  'game:abstainVote': () => void;
   'game:speakingDone': () => void;
   'game:hunterShoot': (data: { targetId: string }) => void;
+  'game:hunterPass': () => void;
   'game:wolfKingShoot': (data: { targetId: string }) => void;
 }
 
@@ -50,7 +54,7 @@ export interface ServerToClientEvents {
   'game:wolfVoteUpdate': (data: { wolfVotes: Record<string, string> }) => void;
   'game:wolfSelectionUpdate': (data: { selections: Record<string, string> }) => void;
   'game:roleConfirmed': (data: { playerId: string }) => void;
-  'game:voteResult': (data: { votes: Record<string, number>; eliminated: string | null }) => void;
+  'game:voteResult': (data: { votes: Record<string, number>; eliminated: string | null; abstained: number; isTie: boolean; details: Record<string, string | null> }) => void;
   'game:over': (data: { winner: 'villager' | 'werewolf'; players: Player[] }) => void;
   'game:systemMessage': (data: SystemMessage) => void;
   'game:error': (data: { message: string }) => void;

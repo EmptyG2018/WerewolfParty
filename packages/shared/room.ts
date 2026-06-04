@@ -76,12 +76,22 @@ export function validateConfig(config: Partial<RoomConfig>): string | null {
   const wolfCount = config.wolfCount ?? DEFAULT_ROOM_CONFIG.wolfCount;
   const roles = config.roles ?? DEFAULT_ROOM_CONFIG.roles;
   const hybridRoles = config.hybridRoles ?? DEFAULT_ROOM_CONFIG.hybridRoles;
+  const uniqueRoles = new Set(roles);
 
   if (maxPlayers < MIN_PLAYERS || maxPlayers > MAX_PLAYERS) {
     return `玩家数需在 ${MIN_PLAYERS}-${MAX_PLAYERS} 之间`;
   }
   if (wolfCount < 1) {
     return '至少需要 1 个狼人';
+  }
+  if (!roles.includes(Role.WEREWOLF)) {
+    return '角色配置必须包含狼人';
+  }
+  if (uniqueRoles.size !== roles.length) {
+    return '特殊角色不能重复选择';
+  }
+  if (roles.includes(Role.VILLAGER)) {
+    return '村民由系统自动填充，不能手动选择';
   }
   if (hybridRoles.some(role => !roles.includes(role) || !canBeHybridRole(role))) {
     return '神民同体只能应用于已启用的神职角色';
@@ -91,6 +101,9 @@ export function validateConfig(config: Partial<RoomConfig>): string | null {
   const assignedSeats = Object.values(roleCounts).reduce((sum, count) => sum + count, 0);
   if (assignedSeats > maxPlayers) {
     return '角色数量不能超过总人数';
+  }
+  if (maxPlayers - assignedSeats < 1) {
+    return '至少需要 1 名村民';
   }
 
   const totalWolves = Object.entries(roleCounts).reduce((sum, [role, count]) => {

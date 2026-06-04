@@ -7,6 +7,7 @@ interface DebugPerspective {
   playerId: string;
   name: string;
   seatIndex: number;
+  playerNumber?: number;
   role: Role | null;
   isHost: boolean;
 }
@@ -102,7 +103,7 @@ export function DebugPanel() {
             </button>
             {viewingPlayer?.role && (
               <div className="px-2 text-[10px] text-moon-mist">
-                当前：{viewingPlayer.seatIndex + 1}号 {viewingPlayer.name} · {ROLES[viewingPlayer.role].name}
+                当前：{viewingPlayer.playerNumber ?? viewingPlayer.seatIndex + 1}号 {viewingPlayer.name} · {ROLES[viewingPlayer.role].name}
               </div>
             )}
           </div>

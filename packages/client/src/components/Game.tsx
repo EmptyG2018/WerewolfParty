@@ -15,12 +15,14 @@ export function Game() {
     room, myId, myRole, gameState, speaking, seerResult, error,
     roleConfirmed, confirmedPlayers, wolfVotes, wolfSelections, wolfTeam, deathEvents, voteResult,
     confirmRole, werewolfKill, wolfConfirmVote, seerCheck, witchSave, witchPoison, guardProtect,
-    vote, speakingDone, hunterShoot, wolfKingShoot, wolfSelfReveal, whiteWolfKingExplode, pauseGame, resumeGame, setSeerResult
+    vote, speakingDone, hunterShoot, wolfKingShoot, wolfSelfReveal, whiteWolfKingExplode, witchPass,
+    abstainVote, pauseGame, resumeGame, resetRoom, leaveRoom, setSeerResult, hunterPass
   } = useGameStore();
 
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [transitionPhase, setTransitionPhase] = useState<GamePhase | null>(null);
+  const [voteHistoryOpen, setVoteHistoryOpen] = useState(false);
 
   // Server-synced countdown from phaseEndsAt.
   useEffect(() => {
@@ -41,10 +43,20 @@ export function Game() {
   }, [gameState?.phase, gameState?.phaseEndsAt, gameState?.paused]);
 
   useEffect(() => {
-    if (!gameState || gameState.paused || gameState.phase === GamePhase.ROLE_CONFIRM || gameState.phase === GamePhase.GAME_OVER) return;
+    if (
+      !gameState ||
+      gameState.paused ||
+      gameState.phase === GamePhase.ROLE_CONFIRM ||
+      gameState.phase === GamePhase.GAME_OVER ||
+      gameState.phase.startsWith('night_')
+    ) return;
     setTransitionPhase(gameState.phase);
     const timeout = setTimeout(() => setTransitionPhase(null), 1200);
     return () => clearTimeout(timeout);
+  }, [gameState?.phase]);
+
+  useEffect(() => {
+    setSelectedTarget(null);
   }, [gameState?.phase]);
 
   if (!room || !gameState || !myRole) return null;
@@ -55,11 +67,17 @@ export function Game() {
   const isNight = currentPhase.startsWith('night_');
   const isHost = room.hostId === myId;
   const isPaused = gameState.paused;
+  const getPlayerNumber = (player: { playerNumber?: number; seatIndex: number }) => player.playerNumber ?? player.seatIndex + 1;
 
   const getPlayerName = (playerId: string | null) => {
     if (!playerId) return '无人';
     const player = room.players.find(p => p.id === playerId);
-    return player ? `${player.seatIndex + 1}号 ${player.name}` : '未知玩家';
+    return player ? `${getPlayerNumber(player)}号 ${player.name}` : '未知玩家';
+  };
+
+  const getVoteTargetName = (playerId: string | null) => {
+    if (playerId === null) return '弃票';
+    return getPlayerName(playerId);
   };
 
   const getDeathReasonName = (reason: DeathReason) => {
@@ -111,6 +129,7 @@ export function Game() {
       [GamePhase.DAY_ANNOUNCE]: '天亮了',
       [GamePhase.DAY_SPEAKING]: '轮流发言',
       [GamePhase.DAY_VOTE]: '投票处决',
+      [GamePhase.LAST_WORDS]: '遗言时间',
       [GamePhase.DAY_SELF_REVEAL]: '狼人自曝',
       [GamePhase.HUNTER_SHOOT]: '临终一击',
       [GamePhase.GAME_OVER]: '尘埃落定',
@@ -130,6 +149,7 @@ export function Game() {
       [GamePhase.DAY_ANNOUNCE]: '☀️',
       [GamePhase.DAY_SPEAKING]: '🎤',
       [GamePhase.DAY_VOTE]: '⚔️',
+      [GamePhase.LAST_WORDS]: '🕯️',
       [GamePhase.DAY_SELF_REVEAL]: '💥',
       [GamePhase.HUNTER_SHOOT]: '🔫',
       [GamePhase.GAME_OVER]: '🏆',
@@ -149,6 +169,7 @@ export function Game() {
       [GamePhase.DAY_ANNOUNCE]: '公布昨夜结果',
       [GamePhase.DAY_SPEAKING]: '按顺序发言',
       [GamePhase.DAY_VOTE]: '所有存活玩家投票',
+      [GamePhase.LAST_WORDS]: '放逐玩家发表遗言',
       [GamePhase.DAY_SELF_REVEAL]: '白天中断，即将入夜',
       [GamePhase.HUNTER_SHOOT]: '猎人可发动技能',
       [GamePhase.WOLF_KING_SHOOT]: '狼王可发动技能',
@@ -160,7 +181,7 @@ export function Game() {
   // 狼人是否已确认投票
   const myWolfVote = myId ? wolfVotes[myId] : undefined;
   const myWolfSelection = myId ? wolfSelections[myId] : undefined;
-  const hasConfirmedWolfVote = !!myWolfVote;
+  const hasConfirmedWolfVote = myId ? Object.prototype.hasOwnProperty.call(wolfVotes, myId) : false;
   const canSelfReveal = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WOLF_SELF_REVEAL)
     && (currentPhase === GamePhase.DAY_SPEAKING || currentPhase === GamePhase.DAY_VOTE);
   const canWhiteWolfKingExplode = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WHITE_WOLF_KING_EXPLODE)
@@ -288,12 +309,14 @@ export function Game() {
   };
 
   // 发言相关
-  const isSpeakingPhase = currentPhase === GamePhase.DAY_SPEAKING;
+  const isLastWordsPhase = currentPhase === GamePhase.LAST_WORDS;
+  const isSpeakingPhase = currentPhase === GamePhase.DAY_SPEAKING || isLastWordsPhase;
   const currentSpeakerId = speaking?.order[speaking?.currentIndex ?? -1];
   const isMyTurn = currentSpeakerId === myId;
   const hasSpoken = speaking?.confirmed.includes(myId ?? '') ?? false;
   const speakingProgress = speaking ? `${Math.min(speaking.currentIndex + 1, speaking.order.length)}/${speaking.order.length}` : '';
   const currentSpeakerName = currentSpeakerId ? getPlayerName(currentSpeakerId) : '';
+  const canFinishSpeaking = isSpeakingPhase && isMyTurn && (isAlive || isLastWordsPhase);
 
   // 狼人投票相关
   const isWolf = isWolfRole(myRole);
@@ -310,6 +333,12 @@ export function Game() {
   const wolfTopTargets = Object.entries(wolfTargetCounts)
     .filter(([, count]) => count === wolfTopVotes && count > 0)
     .map(([targetId]) => targetId);
+  const hasCompletedVote = myId ? Object.prototype.hasOwnProperty.call(gameState.votes, myId) : false;
+  const voteHistory = gameState.voteHistory ?? [];
+  const dedupedVoteHistory = Array.from(
+    voteHistory.reduce((history, entry) => history.set(entry.day, entry), new Map<number, typeof voteHistory[number]>()).values()
+  );
+  const sortedVoteHistory = dedupedVoteHistory.sort((a, b) => b.day - a.day);
 
   return (
     <div className={`flex flex-col min-h-dvh relative transition-colors duration-1000 ${
@@ -510,6 +539,11 @@ export function Game() {
                       {getPlayerName(playerId)} {count}票
                     </span>
                   ))}
+                  {voteResult.abstained > 0 && (
+                    <span className="text-xs px-2 py-1 rounded-lg bg-white/[0.04] text-moon-mist">
+                      弃票 {voteResult.abstained}票
+                    </span>
+                  )}
                 </div>
                 <div className="text-sm text-moon mt-2">
                   {voteResult.eliminated ? `${getPlayerName(voteResult.eliminated)} 出局` : '平票，无人出局'}
@@ -520,13 +554,28 @@ export function Game() {
         </div>
       )}
 
+      {/* Vote history entry */}
+      {sortedVoteHistory.length > 0 && currentPhase !== GamePhase.GAME_OVER && (
+        <div className="px-4 py-1.5 relative z-10">
+          <button
+            onClick={() => setVoteHistoryOpen(true)}
+            className="w-full glass-dark rounded-xl px-4 py-3 flex items-center justify-between gap-3 active:scale-[0.99] transition-transform"
+          >
+            <span className="text-[10px] text-moon-dim tracking-wider">历史投票</span>
+            <span className="text-xs text-moon">
+              {sortedVoteHistory.length}轮
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* Speaking Progress Bar */}
       {isSpeakingPhase && speaking && (
         <div className="px-4 py-1.5 relative z-10">
           <div className="glass rounded-xl px-4 py-2">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[10px] text-moon-dim tracking-wider">当前发言</div>
+                <div className="text-[10px] text-moon-dim tracking-wider">{isLastWordsPhase ? '当前遗言' : '当前发言'}</div>
                 <div className="font-display text-sm text-moon truncate">{currentSpeakerName}</div>
               </div>
               <div className="text-right">
@@ -539,7 +588,7 @@ export function Game() {
             </div>
             {isMyTurn && (
               <div className="mt-2 text-center text-xs px-2 py-1 rounded-lg bg-blood/20 text-blood-400 animate-breathe">
-                轮到你了
+                {isLastWordsPhase ? '请发表遗言' : '轮到你了'}
               </div>
             )}
             {hasSpoken && !isMyTurn && (
@@ -610,7 +659,7 @@ export function Game() {
                       {isDead ? '💀' : isOffline ? '…' : player.name.charAt(0)}
                     </div>
                     <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-forest-100 flex items-center justify-center text-[8px] text-moon-dim font-bold border border-forest-50/30">
-                      {player.seatIndex + 1}
+                      {getPlayerNumber(player)}
                     </div>
                     {player.id === room.hostId && !isDead && (
                       <div className="absolute -top-1.5 -right-1.5 text-[10px]">👑</div>
@@ -747,10 +796,10 @@ export function Game() {
       )}
 
       {/* Speaking Done Button (当前发言者) */}
-      {isSpeakingPhase && isMyTurn && isAlive && (
+      {canFinishSpeaking && (
         <div className="px-4 pb-safe pt-2 pb-4 relative z-20 animate-slide-in-bottom">
           <div className="flex gap-2">
-            {canSelfReveal && (
+            {canSelfReveal && !isLastWordsPhase && (
               <button
                 onClick={() => confirmThen({
                   title: '狼人自曝',
@@ -764,7 +813,7 @@ export function Game() {
                 自曝
               </button>
             )}
-            {canWhiteWolfKingExplode && (
+            {canWhiteWolfKingExplode && !isLastWordsPhase && (
               <button
                 onClick={confirmWhiteWolfKingExplode}
                 disabled={isPaused || !selectedTarget}
@@ -778,7 +827,7 @@ export function Game() {
               disabled={isPaused}
               className="flex-1 py-4 rounded-2xl font-display text-lg tracking-wide text-white bg-gradient-to-r from-gold-dark via-gold to-gold-dark active:scale-[0.97] transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              发言完毕
+              {isLastWordsPhase ? '遗言完毕' : '发言完毕'}
             </button>
           </div>
         </div>
@@ -829,13 +878,13 @@ export function Game() {
       )}
 
       {/* Waiting for speaker */}
-      {isSpeakingPhase && !isMyTurn && isAlive && currentSpeakerId && (
+      {isSpeakingPhase && !isMyTurn && currentSpeakerId && (
         <div className="px-4 pb-safe pt-2 pb-4 relative z-20">
           <div className="glass-dark rounded-2xl p-4 text-center">
             <div className="flex items-center justify-center gap-2">
               <div className="w-2 h-2 rounded-full bg-gold animate-breathe" />
               <span className="text-moon-dim text-sm">
-                等待 <span className="text-moon font-medium">{room.players.find(p => p.id === currentSpeakerId)?.name}</span> 发言...
+                等待 <span className="text-moon font-medium">{room.players.find(p => p.id === currentSpeakerId)?.name}</span> {isLastWordsPhase ? '遗言' : '发言'}...
               </span>
             </div>
           </div>
@@ -876,6 +925,16 @@ export function Game() {
                 </button>
               )}
 
+              {currentPhase === GamePhase.NIGHT_WITCH && (
+                <button
+                  onClick={witchPass}
+                  disabled={isPaused}
+                  className="px-5 py-3.5 rounded-xl glass text-moon-dim font-display text-sm shrink-0 active:scale-95 transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  跳过
+                </button>
+              )}
+
               {/* 狼人投票：确认按钮 */}
               {isWolfPhase && isWolf && (
                 <>
@@ -897,13 +956,40 @@ export function Game() {
 
               {/* 非狼人阶段的通用按钮 */}
               {!(isWolfPhase && isWolf) && (
-                <button
-                  onClick={handleAction}
-                  disabled={isPaused || !selectedTarget}
-                  className={`flex-1 py-3.5 rounded-xl font-display text-base tracking-wide text-white transition-all duration-200 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r ${getActionColor()}`}
-                >
-                  {getActionName()} {selectedTarget ? room.players.find(p => p.id === selectedTarget)?.name : ''}
-                </button>
+                <>
+                  {currentPhase === GamePhase.DAY_VOTE && (
+                    <button
+                      onClick={abstainVote}
+                      disabled={isPaused || hasCompletedVote}
+                      className="px-5 py-3.5 rounded-xl glass text-moon-dim font-display text-sm shrink-0 active:scale-95 transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      弃票
+                    </button>
+                  )}
+                  {currentPhase === GamePhase.HUNTER_SHOOT && (
+                    <button
+                      onClick={() => confirmThen({
+                        title: '放弃开枪',
+                        message: '确认不开枪？确认后将继续游戏流程。',
+                        confirmLabel: '不开枪',
+                        tone: 'safe'
+                      }, hunterPass)}
+                      disabled={isPaused}
+                      className="px-5 py-3.5 rounded-xl glass text-moon-dim font-display text-sm shrink-0 active:scale-95 transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      不开枪
+                    </button>
+                  )}
+                  <button
+                    onClick={handleAction}
+                    disabled={isPaused || !selectedTarget || (currentPhase === GamePhase.DAY_VOTE && hasCompletedVote)}
+                    className={`flex-1 py-3.5 rounded-xl font-display text-base tracking-wide text-white transition-all duration-200 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r ${getActionColor()}`}
+                  >
+                    {currentPhase === GamePhase.DAY_VOTE && hasCompletedVote
+                      ? '已完成投票'
+                      : `${getActionName()} ${selectedTarget ? room.players.find(p => p.id === selectedTarget)?.name : ''}`}
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -985,10 +1071,10 @@ export function Game() {
             )}
 
             <button
-              onClick={() => window.location.reload()}
+              onClick={isHost ? resetRoom : leaveRoom}
               className="w-full py-4 rounded-2xl bg-gradient-to-r from-blood-700 via-blood to-blood-700 text-white font-display text-lg tracking-wide active:scale-[0.97] transition-transform"
             >
-              返回大厅
+              {isHost ? '重新开局' : '离开房间'}
             </button>
           </div>
         </div>
@@ -1018,6 +1104,86 @@ export function Game() {
                 恢复游戏
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Vote history drawer */}
+      {voteHistoryOpen && (
+        <div
+          className="fixed inset-0 z-[58] flex items-end bg-black/55 backdrop-blur-sm animate-fade-in"
+          onClick={() => setVoteHistoryOpen(false)}
+        >
+          <div
+            className="w-full max-h-[72dvh] rounded-t-3xl glass-dark p-4 overflow-y-auto animate-slide-in-bottom"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div>
+                <div className="text-[10px] text-moon-dim tracking-widest">历史投票</div>
+                <div className="font-display text-lg text-moon">{sortedVoteHistory.length}轮记录</div>
+              </div>
+              <button
+                onClick={() => setVoteHistoryOpen(false)}
+                className="w-9 h-9 rounded-full glass flex items-center justify-center text-moon-dim active:scale-95 transition-transform"
+                aria-label="关闭历史投票"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {sortedVoteHistory.map(entry => {
+                const voteRows = Object.entries(entry.votes).sort(([a], [b]) => {
+                  const playerA = room.players.find(player => player.id === a);
+                  const playerB = room.players.find(player => player.id === b);
+                  return (playerA ? getPlayerNumber(playerA) : 999) - (playerB ? getPlayerNumber(playerB) : 999);
+                });
+                return (
+                  <div key={entry.day} className="rounded-2xl bg-forest-50/40 border border-white/[0.04] p-3">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="font-display text-sm text-moon">第{entry.day}天投票</div>
+                      <div className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                        entry.eliminated
+                          ? 'bg-blood/15 text-blood-400 border-blood/20'
+                          : entry.isTie
+                          ? 'bg-gold/10 text-gold border-gold/20'
+                          : 'bg-white/[0.04] text-moon-mist border-white/[0.04]'
+                      }`}>
+                        {entry.eliminated ? `${getPlayerName(entry.eliminated)} 出局` : entry.isTie ? '平票无人出局' : '无人出局'}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      {voteRows.map(([voterId, targetId]) => (
+                        <div key={voterId} className="flex items-center gap-2 text-xs">
+                          <span className="w-24 shrink-0 text-moon truncate">{getPlayerName(voterId)}</span>
+                          <span className="text-moon-mist">→</span>
+                          <span className={targetId ? 'text-moon-dim truncate' : 'text-gold'}>
+                            {getVoteTargetName(targetId)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-2 pt-2 border-t border-white/[0.04] flex flex-wrap gap-1.5">
+                      {Object.entries(entry.voteCount)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([targetId, count]) => (
+                          <span key={targetId} className="text-[10px] px-2 py-0.5 rounded-lg bg-white/[0.04] text-moon-mist">
+                            {getPlayerName(targetId)} {count}票
+                          </span>
+                        ))}
+                      {entry.abstained > 0 && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-lg bg-gold/10 text-gold">
+                          弃票 {entry.abstained}票
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

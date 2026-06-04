@@ -81,6 +81,13 @@ io.on('connection', (socket) => {
     gameManager.startGame(socket);
   });
 
+  socket.on('room:reset', () => {
+    const room = roomManager.getRoomBySocket(socket);
+    if (roomManager.resetRoom(socket) && room) {
+      gameManager.cleanup(room.id);
+    }
+  });
+
   // 游戏事件
   socket.on('game:confirmRole', () => {
     gameManager.confirmRole(socket);
@@ -122,6 +129,10 @@ io.on('connection', (socket) => {
     gameManager.witchPoison(socket, data.targetId);
   });
 
+  socket.on('game:witchPass', () => {
+    gameManager.witchPass(socket);
+  });
+
   socket.on('game:guardProtect', (data) => {
     gameManager.guardProtect(socket, data.targetId);
   });
@@ -130,12 +141,20 @@ io.on('connection', (socket) => {
     gameManager.vote(socket, data.targetId);
   });
 
+  socket.on('game:abstainVote', () => {
+    gameManager.abstainVote(socket);
+  });
+
   socket.on('game:speakingDone', () => {
     gameManager.speakingDone(socket);
   });
 
   socket.on('game:hunterShoot', (data) => {
     gameManager.hunterShoot(socket, data.targetId);
+  });
+
+  socket.on('game:hunterPass', () => {
+    gameManager.hunterPass(socket);
   });
 
   socket.on('game:wolfKingShoot', (data) => {

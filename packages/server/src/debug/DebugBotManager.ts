@@ -15,6 +15,7 @@ export interface DebugPerspective {
   playerId: string;
   name: string;
   seatIndex: number;
+  playerNumber?: number;
   role: Role | null;
   isHost: boolean;
 }
@@ -79,7 +80,8 @@ export class DebugBotManager {
           return this.gameManager.witchPassByPlayer(roomId, bot.id);
         });
         break;
-      case GamePhase.DAY_SPEAKING: {
+      case GamePhase.DAY_SPEAKING:
+      case GamePhase.LAST_WORDS: {
         let currentSpeakerId = gameState.speaking?.order[gameState.speaking.currentIndex];
         let currentBot = bots.find(bot => bot.id === currentSpeakerId);
         while (currentBot && this.gameManager.speakingDoneByPlayer(roomId, currentBot.id)) {
@@ -100,7 +102,9 @@ export class DebugBotManager {
       case GamePhase.HUNTER_SHOOT:
         acted += this.runSingleRoleAction(roomId, bots, RoleAbility.HUNTER_SHOOT, bot => {
           const target = this.pickAliveOther(room.players, bot);
-          return target ? this.gameManager.hunterShootByPlayer(roomId, bot.id, target.id) : false;
+          return target
+            ? this.gameManager.hunterShootByPlayer(roomId, bot.id, target.id)
+            : this.gameManager.hunterPassByPlayer(roomId, bot.id);
         }, false);
         break;
       case GamePhase.WOLF_KING_SHOOT:
@@ -130,6 +134,7 @@ export class DebugBotManager {
           playerId: player.id,
           name: player.name,
           seatIndex: player.seatIndex,
+          playerNumber: player.playerNumber,
           role: player.role,
           isHost: player.isHost
         })),

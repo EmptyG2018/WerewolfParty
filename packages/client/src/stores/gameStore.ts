@@ -15,6 +15,7 @@ export interface DeathEvent {
 export interface VoteResultState {
   votes: Record<string, number>;
   eliminated: string | null;
+  abstained: number;
 }
 
 interface GameStore {
@@ -80,6 +81,7 @@ interface GameStore {
   joinRoom: (roomId: string, playerName: string) => void;
   leaveRoom: () => void;
   startGame: () => void;
+  resetRoom: () => void;
 
   // 房间配置
   updateConfig: (config: Partial<import('@werewolf/shared').RoomConfig>) => void;
@@ -100,10 +102,13 @@ interface GameStore {
   seerCheck: (targetId: string) => void;
   witchSave: () => void;
   witchPoison: (targetId: string) => void;
+  witchPass: () => void;
   guardProtect: (targetId: string) => void;
   vote: (targetId: string) => void;
+  abstainVote: () => void;
   speakingDone: () => void;
   hunterShoot: (targetId: string) => void;
+  hunterPass: () => void;
   wolfKingShoot: (targetId: string) => void;
 }
 
@@ -181,7 +186,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     socket.on('room:updated', ({ room }) => {
-      set({ room });
+      const nextState: Partial<GameStore> = { room };
+      if (room.status === 'waiting' && get().currentView === 'game') {
+        nextState.currentView = 'room';
+        nextState.myRole = null;
+        nextState.gameState = null;
+        nextState.speaking = null;
+        nextState.seerResult = null;
+        nextState.roleConfirmed = false;
+        nextState.confirmedPlayers = [];
+        nextState.wolfVotes = {};
+        nextState.wolfSelections = {};
+        nextState.wolfTeam = [];
+        nextState.deathEvents = [];
+        nextState.voteResult = null;
+      }
+      set(nextState);
     });
 
     socket.on('room:error', ({ message }) => {
@@ -254,10 +274,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
           update.speaking = null;
           set({ speaking: null });
         }
+        if (phase === GamePhase.DAY_VOTE) {
+          update.votes = {};
+        }
         set({ gameState: { ...gameState, ...update } });
         // 新阶段重置狼人投票和确认状态
         if (phase === GamePhase.NIGHT_WEREWOLF) {
           set({ wolfVotes: {}, wolfSelections: {}, voteResult: null });
+        }
+        if (phase === GamePhase.DAY_VOTE) {
+          set({ voteResult: null });
         }
         if (phase !== GamePhase.ROLE_CONFIRM) {
           set({ roleConfirmed: false, confirmedPlayers: [] });
@@ -335,9 +361,29 @@ export const useGameStore = create<GameStore>((set, get) => ({
       get().addSystemMessage(message);
     });
 
-    socket.on('game:voteResult', ({ votes, eliminated }) => {
-      console.log('Vote result:', votes, eliminated);
-      set({ voteResult: { votes, eliminated } });
+    socket.on('game:voteResult', ({ votes, eliminated, abstained, isTie, details }) => {
+      console.log('Vote result:', votes, eliminated, abstained);
+      const gameState = get().gameState;
+      const nextEntry = {
+        day: gameState?.day ?? 0,
+        votes: details,
+        voteCount: votes,
+        eliminated,
+        abstained,
+        isTie
+      };
+      const currentHistory = gameState?.voteHistory ?? [];
+      const nextHistory = currentHistory.some(entry => entry.day === nextEntry.day)
+        ? currentHistory.map(entry => entry.day === nextEntry.day ? nextEntry : entry)
+        : [...currentHistory, nextEntry];
+      set({
+        voteResult: { votes, eliminated, abstained },
+        gameState: gameState ? {
+          ...gameState,
+          votes: details,
+          voteHistory: nextHistory
+        } : gameState
+      });
     });
 
     socket.on('game:over', ({ winner, players }) => {
@@ -418,6 +464,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.emit('room:start');
   },
 
+  resetRoom: () => {
+    socket.emit('room:reset');
+  },
+
   updateConfig: (config) => {
     socket.emit('room:updateConfig', config);
   },
@@ -476,12 +526,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.emit('game:witchPoison', { targetId });
   },
 
+  witchPass: () => {
+    socket.emit('game:witchPass');
+  },
+
   guardProtect: (targetId) => {
     socket.emit('game:guardProtect', { targetId });
   },
 
   vote: (targetId) => {
     socket.emit('game:vote', { targetId });
+    const { gameState, myId } = get();
+    if (gameState && myId && gameState.phase === GamePhase.DAY_VOTE) {
+      set({ gameState: { ...gameState, votes: { ...gameState.votes, [myId]: targetId } } });
+    }
+  },
+
+  abstainVote: () => {
+    socket.emit('game:abstainVote');
+    const { gameState, myId } = get();
+    if (gameState && myId && gameState.phase === GamePhase.DAY_VOTE) {
+      set({ gameState: { ...gameState, votes: { ...gameState.votes, [myId]: null } } });
+    }
   },
 
   speakingDone: () => {
@@ -490,6 +556,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   hunterShoot: (targetId) => {
     socket.emit('game:hunterShoot', { targetId });
+  },
+
+  hunterPass: () => {
+    socket.emit('game:hunterPass');
   },
 
   wolfKingShoot: (targetId) => {

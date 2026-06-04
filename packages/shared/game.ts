@@ -10,6 +10,7 @@ export enum GamePhase {
   DAY_ANNOUNCE = 'day_announce',
   DAY_SPEAKING = 'day_speaking',
   DAY_VOTE = 'day_vote',
+  LAST_WORDS = 'last_words',
   DAY_SELF_REVEAL = 'day_self_reveal',
   HUNTER_SHOOT = 'hunter_shoot',
   WOLF_KING_SHOOT = 'wolf_king_shoot',
@@ -21,6 +22,7 @@ export interface Player {
   sessionId: string;
   name: string;
   roomId: string;
+  playerNumber: number;        // 稳定玩家编号（1-based，不随座位变化）
   seatIndex: number;           // 座位号（0-based，显示时 +1）
   role: Role | null;
   status: 'alive' | 'dead';
@@ -70,6 +72,15 @@ export interface SpeakingState {
   confirmed: string[];
 }
 
+export interface VoteHistoryEntry {
+  day: number;
+  votes: Record<string, string | null>;
+  voteCount: Record<string, number>;
+  eliminated: string | null;
+  abstained: number;
+  isTie: boolean;
+}
+
 export interface GameState {
   phase: GamePhase;
   day: number;
@@ -82,7 +93,8 @@ export interface GameState {
   pausedAt: number | null;
   remainingMs: number | null;
   winner: 'villager' | 'werewolf' | null;
-  votes: Record<string, string>;
+  votes: Record<string, string | null>;
+  voteHistory: VoteHistoryEntry[];
   seerCheckResult: { playerId: string; isWerewolf: boolean } | null;
   witchSaveUsed: boolean;
   witchPoisonUsed: boolean;

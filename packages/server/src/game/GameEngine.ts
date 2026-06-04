@@ -14,6 +14,7 @@ export interface VoteResolution {
   voteCount: Record<string, number>;
   eliminatedId: string | null;
   isTie: boolean;
+  abstained: number;
 }
 
 export class GameEngine {
@@ -97,11 +98,13 @@ export class GameEngine {
   }
 
   /** 解析投票结果（纯逻辑） */
-  resolveVote(votes: Record<string, string>): VoteResolution {
+  resolveVote(votes: Record<string, string | null>): VoteResolution {
     const voteCount: Record<string, number> = {};
     Object.values(votes).forEach(targetId => {
+      if (targetId === null) return;
       voteCount[targetId] = (voteCount[targetId] || 0) + 1;
     });
+    const abstained = Object.values(votes).filter(targetId => targetId === null).length;
 
     let maxVotes = 0;
     let eliminatedId: string | null = null;
@@ -119,7 +122,7 @@ export class GameEngine {
 
     if (isTie) eliminatedId = null;
 
-    return { voteCount, eliminatedId, isTie };
+    return { voteCount, eliminatedId, isTie, abstained };
   }
 
   /** 击杀玩家（修改状态） */
@@ -197,6 +200,7 @@ export class GameEngine {
       remainingMs: null,
       winner: null,
       votes: {},
+      voteHistory: [],
       seerCheckResult: null,
       witchSaveUsed: false,
       witchPoisonUsed: false,

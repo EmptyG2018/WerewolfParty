@@ -49,11 +49,13 @@ export class RoomManager {
       if (seatIndex < 0) break;
 
       const sessionId = `debug_${generateSessionId()}`;
+      const playerNumber = this.findNextPlayerNumber(room);
       const player: Player = {
         id: sessionId,
         sessionId,
         name: `调试${seatIndex + 1}号`,
         roomId,
+        playerNumber,
         seatIndex,
         role: null,
         status: 'alive',
@@ -84,9 +86,22 @@ export class RoomManager {
     return -1;
   }
 
+  private findNextPlayerNumber(room: Room): number {
+    const used = new Set(room.players.map(player => player.playerNumber ?? player.seatIndex + 1));
+    for (let i = 1; i <= room.config.maxPlayers; i++) {
+      if (!used.has(i)) return i;
+    }
+    return room.players.length + 1;
+  }
+
   createRoom(socket: TypedSocket, playerName: string, config?: Partial<RoomConfig>): void {
     const roomId = generateRoomId();
     const roomConfig: RoomConfig = { ...DEFAULT_ROOM_CONFIG, ...config };
+    const error = validateConfig(roomConfig);
+    if (error) {
+      socket.emit('room:error', { message: error });
+      return;
+    }
     const sessionId = generateSessionId();
 
     const player: Player = {
@@ -94,6 +109,7 @@ export class RoomManager {
       sessionId,
       name: playerName,
       roomId,
+      playerNumber: 1,
       seatIndex: 0,
       role: null,
       status: 'alive',
@@ -144,6 +160,7 @@ export class RoomManager {
     }
 
     const seatIndex = this.findNextSeat(room);
+    const playerNumber = this.findNextPlayerNumber(room);
     const sessionId = generateSessionId();
 
     const player: Player = {
@@ -151,6 +168,7 @@ export class RoomManager {
       sessionId,
       name: playerName,
       roomId,
+      playerNumber,
       seatIndex,
       role: null,
       status: 'alive',
@@ -254,6 +272,32 @@ export class RoomManager {
 
     room.config = { ...room.config, ...config };
     this.broadcastRoomUpdate(roomId);
+  }
+
+  resetRoom(socket: TypedSocket): boolean {
+    const room = this.getRoomBySocket(socket);
+    const player = this.getPlayerBySocket(socket);
+    if (!room || !player) return false;
+
+    if (room.hostId !== player.id) {
+      socket.emit('room:error', { message: '只有房主可以重新开局' });
+      return false;
+    }
+    if (room.status !== 'finished') {
+      socket.emit('room:error', { message: '游戏结束后才能重新开局' });
+      return false;
+    }
+
+    room.status = 'waiting';
+    room.players.forEach(roomPlayer => {
+      roomPlayer.role = null;
+      roomPlayer.status = 'alive';
+      roomPlayer.voteTarget = null;
+      roomPlayer.skillUsed = { witchSave: false, witchPoison: false, lastGuardTarget: null };
+    });
+
+    this.broadcastRoomUpdate(room.id);
+    return true;
   }
 
   // ============ 座位交换 ============
