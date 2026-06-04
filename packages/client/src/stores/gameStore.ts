@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Room, GameState, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage } from '@werewolf/shared';
+import { Room, GameState, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage, DeathReason } from '@werewolf/shared';
 import { socket } from '../lib/socket';
 
 type View = 'home' | 'create' | 'room' | 'game';
@@ -8,7 +8,7 @@ let socketInitialized = false;
 
 export interface DeathEvent {
   playerId: string;
-  reason: 'killed' | 'voted' | 'poisoned' | 'shot';
+  reason: DeathReason;
   day: number;
 }
 
@@ -95,6 +95,8 @@ interface GameStore {
   resumeGame: () => void;
   werewolfKill: (targetId: string) => void;
   wolfConfirmVote: () => void;
+  wolfSelfReveal: () => void;
+  whiteWolfKingExplode: (targetId: string) => void;
   seerCheck: (targetId: string) => void;
   witchSave: () => void;
   witchPoison: (targetId: string) => void;
@@ -248,6 +250,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
         if (speaking !== undefined) {
           update.speaking = speaking;
           set({ speaking });
+        } else {
+          update.speaking = null;
+          set({ speaking: null });
         }
         set({ gameState: { ...gameState, ...update } });
         // 新阶段重置狼人投票和确认状态
@@ -449,6 +454,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   wolfConfirmVote: () => {
     socket.emit('game:wolfConfirmVote');
+  },
+
+  wolfSelfReveal: () => {
+    socket.emit('game:wolfSelfReveal');
+  },
+
+  whiteWolfKingExplode: (targetId) => {
+    socket.emit('game:whiteWolfKingExplode', { targetId });
   },
 
   seerCheck: (targetId) => {

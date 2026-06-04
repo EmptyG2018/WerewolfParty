@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { GamePhase, RoleAbility, ROLES, isWolfRole, roleHasAbility } from '@werewolf/shared';
+import { DeathReason, GamePhase, RoleAbility, ROLES, isWolfRole, roleHasAbility } from '@werewolf/shared';
 
 type PendingConfirm = {
   title: string;
@@ -15,7 +15,7 @@ export function Game() {
     room, myId, myRole, gameState, speaking, seerResult, error,
     roleConfirmed, confirmedPlayers, wolfVotes, wolfSelections, wolfTeam, deathEvents, voteResult,
     confirmRole, werewolfKill, wolfConfirmVote, seerCheck, witchSave, witchPoison, guardProtect,
-    vote, speakingDone, hunterShoot, wolfKingShoot, pauseGame, resumeGame, setSeerResult
+    vote, speakingDone, hunterShoot, wolfKingShoot, wolfSelfReveal, whiteWolfKingExplode, pauseGame, resumeGame, setSeerResult
   } = useGameStore();
 
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
@@ -62,21 +62,25 @@ export function Game() {
     return player ? `${player.seatIndex + 1}号 ${player.name}` : '未知玩家';
   };
 
-  const getDeathReasonName = (reason: 'killed' | 'voted' | 'poisoned' | 'shot') => {
+  const getDeathReasonName = (reason: DeathReason) => {
     const names = {
       killed: '狼人袭击',
       voted: '投票放逐',
       poisoned: '女巫毒杀',
-      shot: '开枪带走'
+      shot: '开枪带走',
+      self_exposed: '狼人自曝',
+      exploded: '白狼王带走'
     };
     return names[reason];
   };
 
-  const getDeathReasonClass = (reason: 'killed' | 'voted' | 'poisoned' | 'shot') => {
+  const getDeathReasonClass = (reason: DeathReason) => {
     switch (reason) {
       case 'poisoned': return 'bg-poison/15 text-poison border-poison/20';
       case 'voted': return 'bg-gold/15 text-gold border-gold/20';
       case 'shot': return 'bg-amber-500/15 text-amber-300 border-amber-500/20';
+      case 'self_exposed': return 'bg-blood/20 text-blood-300 border-blood/30';
+      case 'exploded': return 'bg-purple-500/15 text-purple-300 border-purple-500/20';
       default: return 'bg-blood/15 text-blood-400 border-blood/20';
     }
   };
@@ -107,6 +111,7 @@ export function Game() {
       [GamePhase.DAY_ANNOUNCE]: '天亮了',
       [GamePhase.DAY_SPEAKING]: '轮流发言',
       [GamePhase.DAY_VOTE]: '投票处决',
+      [GamePhase.DAY_SELF_REVEAL]: '狼人自曝',
       [GamePhase.HUNTER_SHOOT]: '临终一击',
       [GamePhase.GAME_OVER]: '尘埃落定',
       [GamePhase.WOLF_KING_SHOOT]: '狼王遗言'
@@ -125,6 +130,7 @@ export function Game() {
       [GamePhase.DAY_ANNOUNCE]: '☀️',
       [GamePhase.DAY_SPEAKING]: '🎤',
       [GamePhase.DAY_VOTE]: '⚔️',
+      [GamePhase.DAY_SELF_REVEAL]: '💥',
       [GamePhase.HUNTER_SHOOT]: '🔫',
       [GamePhase.GAME_OVER]: '🏆',
       [GamePhase.WOLF_KING_SHOOT]: '👑'
@@ -143,6 +149,7 @@ export function Game() {
       [GamePhase.DAY_ANNOUNCE]: '公布昨夜结果',
       [GamePhase.DAY_SPEAKING]: '按顺序发言',
       [GamePhase.DAY_VOTE]: '所有存活玩家投票',
+      [GamePhase.DAY_SELF_REVEAL]: '白天中断，即将入夜',
       [GamePhase.HUNTER_SHOOT]: '猎人可发动技能',
       [GamePhase.WOLF_KING_SHOOT]: '狼王可发动技能',
       [GamePhase.GAME_OVER]: '揭示所有身份'
@@ -154,6 +161,10 @@ export function Game() {
   const myWolfVote = myId ? wolfVotes[myId] : undefined;
   const myWolfSelection = myId ? wolfSelections[myId] : undefined;
   const hasConfirmedWolfVote = !!myWolfVote;
+  const canSelfReveal = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WOLF_SELF_REVEAL)
+    && (currentPhase === GamePhase.DAY_SPEAKING || currentPhase === GamePhase.DAY_VOTE);
+  const canWhiteWolfKingExplode = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WHITE_WOLF_KING_EXPLODE)
+    && (currentPhase === GamePhase.DAY_SPEAKING || currentPhase === GamePhase.DAY_VOTE);
 
   const handleAction = () => {
     if (!selectedTarget) return;
@@ -235,6 +246,19 @@ export function Game() {
       case GamePhase.DAY_VOTE: return true;
       default: return false;
     }
+  };
+
+  const canSelectTarget = () => canAct() || canWhiteWolfKingExplode;
+
+  const confirmWhiteWolfKingExplode = () => {
+    if (!selectedTarget) return;
+    const targetName = getPlayerName(selectedTarget);
+    confirmThen({
+      title: '白狼王自曝',
+      message: `确认自曝并带走 ${targetName}？发动后你会出局，并中断白天流程直接进入下一夜。`,
+      confirmLabel: '自曝带走',
+      tone: 'danger'
+    }, () => whiteWolfKingExplode(selectedTarget));
   };
 
   const getActionName = () => {
@@ -535,7 +559,7 @@ export function Game() {
               const isDead = player.status === 'dead';
               const isSelected = player.id === selectedTarget;
               const isMe = player.id === myId;
-              const isTargetable = !isDead && !isMe && canAct();
+              const isTargetable = !isDead && !isMe && canSelectTarget();
               const isOffline = !player.online;
               const isCurrentSpeaker = isSpeakingPhase && player.id === currentSpeakerId;
               const hasPlayerSpoken = speaking?.confirmed.includes(player.id) ?? false;
@@ -725,12 +749,81 @@ export function Game() {
       {/* Speaking Done Button (当前发言者) */}
       {isSpeakingPhase && isMyTurn && isAlive && (
         <div className="px-4 pb-safe pt-2 pb-4 relative z-20 animate-slide-in-bottom">
+          <div className="flex gap-2">
+            {canSelfReveal && (
+              <button
+                onClick={() => confirmThen({
+                  title: '狼人自曝',
+                  message: '确认自曝？自曝后你会出局，并中断白天流程直接进入下一夜。',
+                  confirmLabel: '确认自曝',
+                  tone: 'danger'
+                }, wolfSelfReveal)}
+                disabled={isPaused}
+                className="px-5 py-4 rounded-2xl font-display text-base tracking-wide text-white bg-gradient-to-r from-blood-700 to-blood active:scale-[0.97] transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                自曝
+              </button>
+            )}
+            {canWhiteWolfKingExplode && (
+              <button
+                onClick={confirmWhiteWolfKingExplode}
+                disabled={isPaused || !selectedTarget}
+                className="px-5 py-4 rounded-2xl font-display text-base tracking-wide text-white bg-gradient-to-r from-purple-700 to-purple-500 active:scale-[0.97] transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                带走
+              </button>
+            )}
+            <button
+              onClick={speakingDone}
+              disabled={isPaused}
+              className="flex-1 py-4 rounded-2xl font-display text-lg tracking-wide text-white bg-gradient-to-r from-gold-dark via-gold to-gold-dark active:scale-[0.97] transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              发言完毕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* White wolf king explode button */}
+      {canWhiteWolfKingExplode && (!isSpeakingPhase || !isMyTurn) && (
+        <div className="px-4 pb-safe pt-2 pb-4 relative z-20 animate-slide-in-bottom">
+          <div className="glass-dark rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-xs text-moon-dim tracking-wider">自曝带走目标</div>
+              {selectedTarget && (
+                <div className="flex items-center gap-1.5 text-sm">
+                  <span className="text-moon-dim">→</span>
+                  <span className="font-medium text-moon">
+                    {room.players.find(p => p.id === selectedTarget)?.name}
+                  </span>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={confirmWhiteWolfKingExplode}
+              disabled={isPaused || !selectedTarget}
+              className="w-full py-3.5 rounded-xl font-display text-base tracking-wide text-white bg-gradient-to-r from-purple-700 to-purple-500 active:scale-[0.97] transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              白狼王自曝带走
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Wolf self reveal button */}
+      {canSelfReveal && (!isSpeakingPhase || !isMyTurn) && (
+        <div className="px-4 pb-safe pt-2 pb-4 relative z-20 animate-slide-in-bottom">
           <button
-            onClick={speakingDone}
+            onClick={() => confirmThen({
+              title: '狼人自曝',
+              message: '确认自曝？自曝后你会出局，并中断白天流程直接进入下一夜。',
+              confirmLabel: '确认自曝',
+              tone: 'danger'
+            }, wolfSelfReveal)}
             disabled={isPaused}
-            className="w-full py-4 rounded-2xl font-display text-lg tracking-wide text-white bg-gradient-to-r from-gold-dark via-gold to-gold-dark active:scale-[0.97] transition-transform"
+            className="w-full py-4 rounded-2xl font-display text-lg tracking-wide text-white bg-gradient-to-r from-blood-700 via-blood to-blood-700 active:scale-[0.97] transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            发言完毕
+            狼人自曝
           </button>
         </div>
       )}

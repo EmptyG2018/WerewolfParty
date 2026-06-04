@@ -2,6 +2,7 @@ export enum Role {
   VILLAGER = 'villager',
   WEREWOLF = 'werewolf',
   WOLF_KING = 'wolf_king',
+  WHITE_WOLF_KING = 'white_wolf_king',
   SEER = 'seer',
   WITCH = 'witch',
   HUNTER = 'hunter',
@@ -16,6 +17,8 @@ export enum RoleGroup {
 
 export enum RoleAbility {
   WEREWOLF_KILL = 'werewolf_kill',
+  WOLF_SELF_REVEAL = 'wolf_self_reveal',
+  WHITE_WOLF_KING_EXPLODE = 'white_wolf_king_explode',
   SEER_CHECK = 'seer_check',
   WITCH_SAVE = 'witch_save',
   WITCH_POISON = 'witch_poison',
@@ -144,19 +147,28 @@ export const ROLE_DEFINITIONS: Record<Role, RoleDefinition> = {
     id: Role.WEREWOLF,
     name: '狼人',
     icon: '🐺',
-    description: '每晚可以击杀一名玩家',
-    skill: '击杀',
+    description: '每晚可以击杀一名玩家，白天可以自曝中断流程',
+    skill: '击杀/自曝',
     canDisable: false,
-    abilities: [RoleAbility.WEREWOLF_KILL]
+    abilities: [RoleAbility.WEREWOLF_KILL, RoleAbility.WOLF_SELF_REVEAL]
   }),
   [Role.WOLF_KING]: new WolfRoleDefinition({
     id: Role.WOLF_KING,
     name: '狼王',
     icon: '👑',
-    description: '被狼人击杀时可开枪带走一人，被毒或被投票出局不能发动',
-    skill: '临终一击',
+    description: '被狼人击杀时可开枪带走一人，白天可以自曝中断流程',
+    skill: '临终一击/自曝',
     canDisable: true,
-    abilities: [RoleAbility.WEREWOLF_KILL, RoleAbility.WOLF_KING_SHOOT]
+    abilities: [RoleAbility.WEREWOLF_KILL, RoleAbility.WOLF_KING_SHOOT, RoleAbility.WOLF_SELF_REVEAL]
+  }),
+  [Role.WHITE_WOLF_KING]: new WolfRoleDefinition({
+    id: Role.WHITE_WOLF_KING,
+    name: '白狼王',
+    icon: '♛',
+    description: '每晚参与狼人击杀，白天可以自曝并带走一名玩家',
+    skill: '自曝带人',
+    canDisable: true,
+    abilities: [RoleAbility.WEREWOLF_KILL, RoleAbility.WHITE_WOLF_KING_EXPLODE]
   }),
   [Role.SEER]: new GodRoleDefinition({
     id: Role.SEER,
@@ -222,7 +234,7 @@ export const ROLE_PRESETS: RolePreset[] = [
     id: 'preset-12',
     name: '12人进阶局',
     playerCount: 12,
-    roles: [Role.WEREWOLF, Role.WOLF_KING, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+    roles: [Role.WEREWOLF, Role.WHITE_WOLF_KING, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
     wolfCount: 3,
     hybridRoles: []
   }

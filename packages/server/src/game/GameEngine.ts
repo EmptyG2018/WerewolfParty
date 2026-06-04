@@ -1,5 +1,5 @@
 import {
-  Room, Player, Role, GamePhase, GameState,
+  Room, Player, Role, GamePhase, GameState, DeathReason,
   RoleAbility, isWolfRole, isGodRole, isVillagerRole, roleHasAbility
 } from '@werewolf/shared';
 
@@ -127,7 +127,7 @@ export class GameEngine {
     room: Room,
     gameState: GameState,
     playerId: string,
-    reason: 'killed' | 'voted' | 'poisoned' | 'shot'
+    reason: DeathReason
   ): Player | null {
     const player = room.players.find(p => p.id === playerId);
     if (!player || player.status === 'dead') return null;

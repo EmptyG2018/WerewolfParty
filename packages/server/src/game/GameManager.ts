@@ -6,6 +6,8 @@ import {
 } from '@werewolf/shared';
 import { RoomManager } from '../rooms/RoomManager';
 import { GameEngine } from './GameEngine';
+import { WolfSelfRevealAction } from './actions/WolfSelfRevealAction';
+import { WhiteWolfKingExplodeAction } from './actions/WhiteWolfKingExplodeAction';
 import { generateMessageId } from '../utils';
 
 type TypedSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
@@ -20,6 +22,8 @@ interface ActionContext {
 export class GameManager {
   private roomManager: RoomManager;
   private engine: GameEngine;
+  private wolfSelfRevealAction: WolfSelfRevealAction;
+  private whiteWolfKingExplodeAction: WhiteWolfKingExplodeAction;
   private io: TypedServer;
   private gameStates: Map<string, GameState> = new Map();
   private phaseTimers: Map<string, NodeJS.Timeout> = new Map();
@@ -35,6 +39,8 @@ export class GameManager {
   constructor(roomManager: RoomManager, io: TypedServer) {
     this.roomManager = roomManager;
     this.engine = new GameEngine();
+    this.wolfSelfRevealAction = new WolfSelfRevealAction(this.engine);
+    this.whiteWolfKingExplodeAction = new WhiteWolfKingExplodeAction(this.engine);
     this.io = io;
   }
 
@@ -521,6 +527,115 @@ export class GameManager {
       this.resolveWolfPhase(ctx.room.id);
     }
     return true;
+  }
+
+  wolfSelfReveal(socket: TypedSocket): void {
+    const ctx = this.validateContext(socket);
+    if (!ctx) return;
+
+    const result = this.executeWolfSelfReveal(ctx.room, ctx.gameState, ctx.player);
+    if (!result.ok && result.error) {
+      socket.emit('game:error', { message: result.error });
+    }
+  }
+
+  wolfSelfRevealByPlayer(roomId: string, playerId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId);
+    if (!ctx) return false;
+
+    return this.executeWolfSelfReveal(ctx.room, ctx.gameState, ctx.player).ok;
+  }
+
+  whiteWolfKingExplode(socket: TypedSocket, targetId: string): void {
+    const ctx = this.validateContext(socket);
+    if (!ctx) return;
+
+    const result = this.executeWhiteWolfKingExplode(ctx.room, ctx.gameState, ctx.player, targetId);
+    if (!result.ok && result.error) {
+      socket.emit('game:error', { message: result.error });
+    }
+  }
+
+  whiteWolfKingExplodeByPlayer(roomId: string, playerId: string, targetId: string): boolean {
+    const ctx = this.validatePlayerContext(roomId, playerId);
+    if (!ctx) return false;
+
+    return this.executeWhiteWolfKingExplode(ctx.room, ctx.gameState, ctx.player, targetId).ok;
+  }
+
+  private executeWolfSelfReveal(room: Room, gameState: GameState, player: Player): { ok: boolean; error?: string } {
+    const result = this.wolfSelfRevealAction.execute(room, gameState, player);
+    if (!result.ok) return { ok: false, error: result.error };
+
+    this.clearPhaseTimer(room.id);
+    gameState.speaking = null;
+    gameState.votes = {};
+    this.wolfVotes.set(room.id, new Map());
+    this.wolfSelections.set(room.id, new Map());
+
+    this.io.to(room.id).emit('game:playerDead', {
+      playerId: player.id,
+      reason: 'self_exposed',
+      day: gameState.day
+    });
+    this.io.to(room.id).emit('game:systemMessage', {
+      id: generateMessageId(),
+      content: `${player.seatIndex + 1}号 ${player.name} 自曝，白天流程中断`,
+      timestamp: Date.now()
+    });
+
+    if (result.winner) {
+      this.endGame(room.id, result.winner);
+      return { ok: true };
+    }
+
+    gameState.day++;
+    this.emitPhaseChanged(room.id, GamePhase.DAY_SELF_REVEAL, 3);
+    this.schedulePhaseTimeout(room.id, 3000, () => this.startNightPhase(room.id));
+    return { ok: true };
+  }
+
+  private executeWhiteWolfKingExplode(
+    room: Room,
+    gameState: GameState,
+    player: Player,
+    targetId: string
+  ): { ok: boolean; error?: string } {
+    const target = room.players.find(candidate => candidate.id === targetId);
+    const result = this.whiteWolfKingExplodeAction.execute(room, gameState, player, targetId);
+    if (!result.ok) return { ok: false, error: result.error };
+
+    this.clearPhaseTimer(room.id);
+    gameState.speaking = null;
+    gameState.votes = {};
+    this.wolfVotes.set(room.id, new Map());
+    this.wolfSelections.set(room.id, new Map());
+
+    this.io.to(room.id).emit('game:playerDead', {
+      playerId: player.id,
+      reason: 'self_exposed',
+      day: gameState.day
+    });
+    this.io.to(room.id).emit('game:playerDead', {
+      playerId: targetId,
+      reason: 'exploded',
+      day: gameState.day
+    });
+    this.io.to(room.id).emit('game:systemMessage', {
+      id: generateMessageId(),
+      content: `${player.seatIndex + 1}号 ${player.name} 白狼王自曝，带走 ${target ? `${target.seatIndex + 1}号 ${target.name}` : '一名玩家'}`,
+      timestamp: Date.now()
+    });
+
+    if (result.winner) {
+      this.endGame(room.id, result.winner);
+      return { ok: true };
+    }
+
+    gameState.day++;
+    this.emitPhaseChanged(room.id, GamePhase.DAY_SELF_REVEAL, 3);
+    this.schedulePhaseTimeout(room.id, 3000, () => this.startNightPhase(room.id));
+    return { ok: true };
   }
 
   /** 狼人阶段结算：全部弃票=平安夜，平票随机，否则多数票 */

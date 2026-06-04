@@ -10,6 +10,7 @@ export enum GamePhase {
   DAY_ANNOUNCE = 'day_announce',
   DAY_SPEAKING = 'day_speaking',
   DAY_VOTE = 'day_vote',
+  DAY_SELF_REVEAL = 'day_self_reveal',
   HUNTER_SHOOT = 'hunter_shoot',
   WOLF_KING_SHOOT = 'wolf_king_shoot',
   GAME_OVER = 'game_over'
@@ -51,9 +52,11 @@ export interface NightAction {
 
 export interface DeadPlayer {
   playerId: string;
-  reason: 'killed' | 'voted' | 'poisoned' | 'shot';
+  reason: DeathReason;
   day: number;
 }
+
+export type DeathReason = 'killed' | 'voted' | 'poisoned' | 'shot' | 'self_exposed' | 'exploded';
 
 export interface SystemMessage {
   id: string;

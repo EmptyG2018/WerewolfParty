@@ -1,5 +1,5 @@
 import { Role } from './roles';
-import { GamePhase, GameState, Player, SeatSwapRequest, SpeakingState, SystemMessage } from './game';
+import { DeathReason, GamePhase, GameState, Player, SeatSwapRequest, SpeakingState, SystemMessage } from './game';
 import { Room, RoomConfig } from './room';
 
 export interface ClientToServerEvents {
@@ -17,6 +17,8 @@ export interface ClientToServerEvents {
   'game:resume': () => void;
   'game:werewolfKill': (data: { targetId: string }) => void;
   'game:wolfConfirmVote': () => void;
+  'game:wolfSelfReveal': () => void;
+  'game:whiteWolfKingExplode': (data: { targetId: string }) => void;
   'game:seerCheck': (data: { targetId: string }) => void;
   'game:witchSave': () => void;
   'game:witchPoison': (data: { targetId: string }) => void;
@@ -43,7 +45,7 @@ export interface ServerToClientEvents {
   'game:paused': (data: { remainingMs: number | null }) => void;
   'game:resumed': (data: { phase: GamePhase; timer: number; endsAt: number | null; speaking?: SpeakingState }) => void;
   'game:speakingUpdate': (data: { speaking: SpeakingState }) => void;
-  'game:playerDead': (data: { playerId: string; reason: 'killed' | 'voted' | 'poisoned' | 'shot'; day: number }) => void;
+  'game:playerDead': (data: { playerId: string; reason: DeathReason; day: number }) => void;
   'game:seerResult': (data: { playerId: string; isWerewolf: boolean }) => void;
   'game:wolfVoteUpdate': (data: { wolfVotes: Record<string, string> }) => void;
   'game:wolfSelectionUpdate': (data: { selections: Record<string, string> }) => void;

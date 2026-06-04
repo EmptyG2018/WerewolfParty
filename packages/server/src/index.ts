@@ -102,6 +102,14 @@ io.on('connection', (socket) => {
     gameManager.wolfConfirmVote(socket);
   });
 
+  socket.on('game:wolfSelfReveal', () => {
+    gameManager.wolfSelfReveal(socket);
+  });
+
+  socket.on('game:whiteWolfKingExplode', (data) => {
+    gameManager.whiteWolfKingExplode(socket, data.targetId);
+  });
+
   socket.on('game:seerCheck', (data) => {
     gameManager.seerCheck(socket, data.targetId);
   });
