@@ -17,6 +17,8 @@ export interface VoteResolution {
   abstained: number;
 }
 
+export type NightActionKey = 'wolfKill' | 'witchPoison' | 'guardProtect';
+
 export class GameEngine {
 
   /** 分配角色：构建角色池、洗牌、分配 */
@@ -63,15 +65,15 @@ export class GameEngine {
   resolveNight(
     room: Room,
     gameState: GameState,
-    nightActions: Map<Role, { targetId: string }>,
+    nightActions: Map<NightActionKey, { targetId: string }>,
     witchSavedThisNight = false
   ): NightResolution {
     // 夜晚结算顺序：狼刀先被守卫/女巫解药抵消，再合并毒药死亡，避免重复死亡记录。
-    let killedPlayerId = nightActions.get(Role.WEREWOLF)?.targetId ?? null;
-    const poisonedPlayerId = nightActions.get(Role.WITCH)?.targetId ?? null;
+    let killedPlayerId = nightActions.get('wolfKill')?.targetId ?? null;
+    const poisonedPlayerId = nightActions.get('witchPoison')?.targetId ?? null;
 
     // 守卫保护
-    const guardAction = nightActions.get(Role.GUARD);
+    const guardAction = nightActions.get('guardProtect');
     if (guardAction && guardAction.targetId === killedPlayerId) {
       killedPlayerId = null;
     }

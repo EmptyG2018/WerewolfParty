@@ -47,10 +47,8 @@ export function Game() {
       !gameState ||
       gameState.paused ||
       gameState.phase === GamePhase.ROLE_CONFIRM ||
-      gameState.phase === GamePhase.GAME_OVER ||
-      gameState.phase.startsWith('night_')
+      gameState.phase === GamePhase.GAME_OVER
     ) return;
-    // 夜晚阶段不弹转场，避免遮住夜间技能操作。
     setTransitionPhase(gameState.phase);
     const timeout = setTimeout(() => setTransitionPhase(null), 1200);
     return () => clearTimeout(timeout);
@@ -348,7 +346,7 @@ export function Game() {
     }`}>
       {/* Phase transition */}
       {transitionPhase && (
-        <div className="fixed inset-0 z-[55] flex items-center justify-center bg-forest/85 backdrop-blur-sm pointer-events-none animate-fade-in">
+        <div className="fixed inset-0 z-[55] flex items-center justify-center bg-forest/85 backdrop-blur-sm animate-fade-in">
           <div className="text-center animate-moonrise">
             <div className={`mx-auto mb-5 w-20 h-20 rounded-full flex items-center justify-center text-4xl ${
               transitionPhase.toString().startsWith('night_')
@@ -610,7 +608,8 @@ export function Game() {
               const isDead = player.status === 'dead';
               const isSelected = player.id === selectedTarget;
               const isMe = player.id === myId;
-              const isTargetable = !isDead && !isMe && canSelectTarget();
+              const canTargetSelf = isWolfPhase && isWolf;
+              const isTargetable = !isDead && (canTargetSelf || !isMe) && canSelectTarget();
               const isOffline = !player.online;
               const isCurrentSpeaker = isSpeakingPhase && player.id === currentSpeakerId;
               const hasPlayerSpoken = speaking?.confirmed.includes(player.id) ?? false;

@@ -5,7 +5,7 @@ import {
   RoleAbility, isWolfRole, roleHasAbility, roleRevealsAsWolf
 } from '@werewolf/shared';
 import { RoomManager } from '../rooms/RoomManager';
-import { GameEngine } from './GameEngine';
+import { GameEngine, NightActionKey } from './GameEngine';
 import { WolfSelfRevealAction } from './actions/WolfSelfRevealAction';
 import { WhiteWolfKingExplodeAction } from './actions/WhiteWolfKingExplodeAction';
 import { generateMessageId } from '../utils';
@@ -24,6 +24,8 @@ type DeathRecord = {
   reason: DeathReason;
 };
 
+const PHASE_ADVANCE_DELAY_MS = 2000;
+
 export class GameManager {
   private roomManager: RoomManager;
   private engine: GameEngine;
@@ -34,11 +36,12 @@ export class GameManager {
   private phaseTimers: Map<string, NodeJS.Timeout> = new Map();
   // 暂停阶段时保留原回调，恢复后继续挂回同一个阶段推进逻辑。
   private phaseTimeoutCallbacks: Map<string, () => void> = new Map();
-  private nightActions: Map<string, Map<Role, { targetId: string }>> = new Map();
+  private nightActions: Map<string, Map<NightActionKey, { targetId: string }>> = new Map();
   private roleConfirmations: Map<string, Set<string>> = new Map();  // roomId → confirmed player IDs
   private wolfVotes: Map<string, Map<string, string>> = new Map();  // roomId → (wolfId → targetId) 已确认
   private wolfSelections: Map<string, Map<string, string>> = new Map();  // roomId → (wolfId → targetId) 仅选择
   private witchSavedTonight: Map<string, boolean> = new Map();
+  private phaseAdvancingRooms: Set<string> = new Set();
   // 房间同一时刻只会有一个待处理死亡技能；resume 用来回到被中断的主流程。
   private pendingHunterShots: Map<string, { playerId: string; resume: () => void }> = new Map();
   private hunterShotsUsed: Set<string> = new Set();
@@ -64,6 +67,7 @@ export class GameManager {
       socket.emit('game:error', { message: '游戏已暂停' });
       return null;
     }
+    if (this.phaseAdvancingRooms.has(room.id)) return null;
     if (expectedPhase && gameState.phase !== expectedPhase) return null;
 
     const player = this.roomManager.getPlayerBySocket(socket);
@@ -108,6 +112,7 @@ export class GameManager {
 
     const gameState = this.gameStates.get(roomId);
     if (!gameState || gameState.paused) return null;
+    if (this.phaseAdvancingRooms.has(roomId)) return null;
     if (expectedPhase && gameState.phase !== expectedPhase) return null;
 
     const player = room.players.find(roomPlayer => roomPlayer.id === playerId);
@@ -139,7 +144,10 @@ export class GameManager {
     const timeout = this.phaseTimers.get(roomId);
     if (timeout) clearTimeout(timeout);
     this.phaseTimers.delete(roomId);
-    if (clearCallback) this.phaseTimeoutCallbacks.delete(roomId);
+    if (clearCallback) {
+      this.phaseTimeoutCallbacks.delete(roomId);
+      this.phaseAdvancingRooms.delete(roomId);
+    }
   }
 
   private schedulePhaseTimeout(roomId: string, ms: number, callback: () => void): void {
@@ -157,6 +165,14 @@ export class GameManager {
     }, Math.max(0, ms));
 
     this.phaseTimers.set(roomId, timeout);
+  }
+
+  private schedulePhaseAdvance(roomId: string, callback: () => void): void {
+    this.schedulePhaseTimeout(roomId, PHASE_ADVANCE_DELAY_MS, () => {
+      this.phaseAdvancingRooms.delete(roomId);
+      callback();
+    });
+    this.phaseAdvancingRooms.add(roomId);
   }
 
   private startHunterShot(roomId: string, hunterId: string, resume: () => void): void {
@@ -233,7 +249,7 @@ export class GameManager {
 
     const phases = this.engine.getNightPhases(room);
     const currentIndex = phases.indexOf(currentPhase);
-    this.runNightPhases(roomId, phases, currentIndex + 1);
+    this.schedulePhaseAdvance(roomId, () => this.runNightPhases(roomId, phases, currentIndex + 1));
   }
 
   // ============ 游戏生命周期 ============
@@ -446,6 +462,7 @@ export class GameManager {
     const timer = Math.ceil(remainingMs / 1000);
     const endsAt = remainingMs > 0 ? Date.now() + remainingMs : null;
     const callback = this.phaseTimeoutCallbacks.get(room.id);
+    const wasAdvancing = this.phaseAdvancingRooms.has(room.id);
 
     gameState.paused = false;
     gameState.pausedAt = null;
@@ -455,6 +472,7 @@ export class GameManager {
 
     if (callback) {
       this.schedulePhaseTimeout(room.id, remainingMs, callback);
+      if (wasAdvancing) this.phaseAdvancingRooms.add(room.id);
     }
 
     const payload = {
@@ -515,7 +533,7 @@ export class GameManager {
     if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WEREWOLF_KILL) || ctx.player.status === 'dead') return;
 
     const target = this.getAliveTarget(ctx.room, targetId);
-    if (!target || target.id === ctx.player.id) return;
+    if (!target) return;
 
     // 记录选择（仅本地广播，不确认投票）
     let selections = this.wolfSelections.get(ctx.room.id);
@@ -538,7 +556,7 @@ export class GameManager {
     if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WEREWOLF_KILL) || ctx.player.status === 'dead') return false;
 
     const target = this.getAliveTarget(ctx.room, targetId);
-    if (!target || target.id === ctx.player.id) return false;
+    if (!target) return false;
 
     let selections = this.wolfSelections.get(ctx.room.id);
     if (!selections) {
@@ -742,7 +760,7 @@ export class GameManager {
       : this.resolveWolfVote(votes || new Map(), wolves);
 
     const actions = this.nightActions.get(roomId);
-    if (actions && finalTarget) actions.set(Role.WEREWOLF, { targetId: finalTarget });
+    if (actions && finalTarget) actions.set('wolfKill', { targetId: finalTarget });
 
     this.clearPhaseTimer(roomId);
     this.advanceNightPhase(roomId, GamePhase.NIGHT_WEREWOLF);
@@ -804,7 +822,7 @@ export class GameManager {
     if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WITCH_SAVE) || ctx.player.status === 'dead') return;
 
     const actions = this.nightActions.get(ctx.room.id);
-    const killedTargetId = actions?.get(Role.WEREWOLF)?.targetId ?? null;
+    const killedTargetId = actions?.get('wolfKill')?.targetId ?? null;
     if (!killedTargetId) {
       socket.emit('game:error', { message: '今晚没有可救目标' });
       return;
@@ -858,7 +876,7 @@ export class GameManager {
     if (!target || target.id === ctx.player.id) return;
 
     const actions = this.nightActions.get(ctx.room.id);
-    if (actions) actions.set(Role.WITCH, { targetId });
+    if (actions) actions.set('witchPoison', { targetId });
 
     ctx.player.skillUsed.witchPoison = true;
     this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_WITCH);
@@ -895,7 +913,7 @@ export class GameManager {
     if (!target) return;
 
     const actions = this.nightActions.get(ctx.room.id);
-    if (actions) actions.set(Role.GUARD, { targetId });
+    if (actions) actions.set('guardProtect', { targetId });
 
     ctx.player.skillUsed.lastGuardTarget = targetId;
     this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_GUARD);
@@ -910,7 +928,7 @@ export class GameManager {
     if (!target) return false;
 
     const actions = this.nightActions.get(ctx.room.id);
-    if (actions) actions.set(Role.GUARD, { targetId });
+    if (actions) actions.set('guardProtect', { targetId });
 
     ctx.player.skillUsed.lastGuardTarget = targetId;
     this.advanceNightPhase(ctx.room.id, GamePhase.NIGHT_GUARD);
