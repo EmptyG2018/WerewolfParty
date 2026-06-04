@@ -18,6 +18,7 @@ export class WhiteWolfKingExplodeAction {
   constructor(private readonly engine: GameEngine) {}
 
   canExecute(gameState: GameState, player: Player): boolean {
+    // 白狼王自曝带人是白天技能，夜晚仍只作为狼人参与狼刀投票。
     return (
       player.status === 'alive' &&
       player.role !== null &&
@@ -36,6 +37,7 @@ export class WhiteWolfKingExplodeAction {
       return { ok: false, error: '请选择一名存活的其他玩家' };
     }
 
+    // 先结算白狼王本人出局，再结算被带走目标；两者都不触发额外死亡技能。
     const explodedPlayer = this.engine.killPlayer(room, gameState, player.id, 'self_exposed');
     if (!explodedPlayer) {
       return { ok: false, error: '自曝失败' };

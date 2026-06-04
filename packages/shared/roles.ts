@@ -76,6 +76,7 @@ export abstract class RoleDefinition {
 
   getGroups(hybridRoles: Role[] = []): RoleGroup[] {
     const groups = new Set(this.groups);
+    // “神民同体”只改变胜负阵营统计，不改变角色本身的技能或预言家查验结果。
     if (hybridRoles.includes(this.id) && this.canBeHybrid()) {
       groups.add(RoleGroup.VILLAGER);
     }
@@ -91,10 +92,12 @@ export abstract class RoleDefinition {
   }
 
   canBeHybrid(): boolean {
+    // 只有非狼人神职可配置为神民同体，避免狼队角色同时计入民阵营。
     return this.hasBaseGroup(RoleGroup.GOD) && !this.hasBaseGroup(RoleGroup.WOLF);
   }
 
   revealsAsWolf(): boolean {
+    // 查验结果按基础身份暴露，不受 hybridRoles 影响。
     return this.hasBaseGroup(RoleGroup.WOLF);
   }
 
@@ -276,5 +279,6 @@ export function roleHasAbility(role: Role, ability: RoleAbility): boolean {
 }
 
 export function roleRevealsAsWolf(role: Role): boolean {
+  // 给预言家查验使用：神民同体仍然验为好人，狼王/白狼王验为狼人。
   return getRoleDefinition(role).revealsAsWolf();
 }

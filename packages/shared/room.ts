@@ -31,7 +31,7 @@ export const DEFAULT_ROOM_CONFIG: RoomConfig = {
 export const MIN_PLAYERS = 7;
 export const MAX_PLAYERS = 12;
 
-/** 计算阵营人数 */
+/** 计算胜负判定所需的阵营人数，神民同体角色会同时计入神和民。 */
 export function getCampCounts(config: RoomConfig) {
   const roleCounts = getRoleCounts(config, true);
   let wolves = 0;
@@ -48,7 +48,7 @@ export function getCampCounts(config: RoomConfig) {
   return { wolves, gods, villagers, total: config.maxPlayers };
 }
 
-/** 获取各角色数量（用于显示） */
+/** 获取各角色数量（用于显示/校验）；未显式配置的座位自动补村民。 */
 export function getRoleCounts(config: RoomConfig, includeAutoVillagers = true): Record<string, number> {
   const counts: Record<string, number> = {};
   config.roles.forEach(r => {
@@ -70,7 +70,7 @@ export function getRoleCounts(config: RoomConfig, includeAutoVillagers = true): 
   return counts;
 }
 
-/** 校验房间配置是否合法 */
+/** 校验房间配置是否合法，保证开局后角色池能完整填满所有座位。 */
 export function validateConfig(config: Partial<RoomConfig>): string | null {
   const maxPlayers = config.maxPlayers ?? DEFAULT_ROOM_CONFIG.maxPlayers;
   const wolfCount = config.wolfCount ?? DEFAULT_ROOM_CONFIG.wolfCount;

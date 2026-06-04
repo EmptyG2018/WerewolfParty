@@ -18,6 +18,7 @@ export class WolfSelfRevealAction {
   constructor(private readonly engine: GameEngine) {}
 
   canExecute(gameState: GameState, player: Player): boolean {
+    // 自曝只允许在白天发言/投票阶段，用来中断当天流程并立即入夜。
     return (
       player.status === 'alive' &&
       player.role !== null &&
@@ -31,6 +32,7 @@ export class WolfSelfRevealAction {
       return { ok: false, error: '当前阶段不能自曝' };
     }
 
+    // 动作类只负责规则原子操作；广播、计时器和阶段推进由 GameManager 处理。
     const deadPlayer = this.engine.killPlayer(room, gameState, player.id, 'self_exposed');
     if (!deadPlayer) {
       return { ok: false, error: '自曝失败' };

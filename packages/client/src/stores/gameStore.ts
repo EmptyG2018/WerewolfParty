@@ -4,6 +4,7 @@ import { socket } from '../lib/socket';
 
 type View = 'home' | 'create' | 'room' | 'game';
 const SESSION_STORAGE_KEY = 'werewolf.sessionId';
+// React 严格模式下组件可能重复挂载，用模块级标记避免重复注册 socket 监听。
 let socketInitialized = false;
 
 export interface DeathEvent {
@@ -149,6 +150,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socketInitialized = true;
 
     socket.on('connect', () => {
+      // 用稳定 sessionId 尝试恢复房间和身份，刷新页面不会直接丢局。
       const sessionId = localStorage.getItem(SESSION_STORAGE_KEY);
       if (sessionId) {
         socket.emit('room:reconnect', { sessionId });
@@ -188,6 +190,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.on('room:updated', ({ room }) => {
       const nextState: Partial<GameStore> = { room };
       if (room.status === 'waiting' && get().currentView === 'game') {
+        // 重新开局会把客户端从游戏页拉回房间，并清空上一局的私有/临时状态。
         nextState.currentView = 'room';
         nextState.myRole = null;
         nextState.gameState = null;
@@ -258,6 +261,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.on('game:phaseChanged', ({ phase, timer, endsAt, speaking }) => {
       const gameState = get().gameState;
       if (gameState) {
+        // 服务端下发 endsAt，客户端按当前时间换算剩余秒数，保证多端显示一致。
         const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
         const update: Partial<GameState> = {
           phase,
@@ -280,6 +284,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         set({ gameState: { ...gameState, ...update } });
         // 新阶段重置狼人投票和确认状态
         if (phase === GamePhase.NIGHT_WEREWOLF) {
+          // 新一晚重新开始狼队选择/确认，上一晚的投票结果不能沿用。
           set({ wolfVotes: {}, wolfSelections: {}, voteResult: null });
         }
         if (phase === GamePhase.DAY_VOTE) {
@@ -348,6 +353,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         });
       }
       const deathEvents = get().deathEvents;
+      // 同一死亡事件可能随重连或房间更新重复到达，时间线按 player/reason/day 去重。
       if (!deathEvents.some(event => event.playerId === playerId && event.reason === reason && event.day === day)) {
         set({ deathEvents: [...deathEvents, { playerId, reason, day }] });
       }
@@ -373,6 +379,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         isTie
       };
       const currentHistory = gameState?.voteHistory ?? [];
+      // 同一天投票结果以最后一次服务端结算为准，避免历史抽屉出现重复天数。
       const nextHistory = currentHistory.some(entry => entry.day === nextEntry.day)
         ? currentHistory.map(entry => entry.day === nextEntry.day ? nextEntry : entry)
         : [...currentHistory, nextEntry];
@@ -538,6 +545,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.emit('game:vote', { targetId });
     const { gameState, myId } = get();
     if (gameState && myId && gameState.phase === GamePhase.DAY_VOTE) {
+      // 乐观标记自己已投票，避免等待服务端广播期间重复点击。
       set({ gameState: { ...gameState, votes: { ...gameState.votes, [myId]: targetId } } });
     }
   },
@@ -546,6 +554,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.emit('game:abstainVote');
     const { gameState, myId } = get();
     if (gameState && myId && gameState.phase === GamePhase.DAY_VOTE) {
+      // null 与服务端约定一致，表示弃票而不是未投票。
       set({ gameState: { ...gameState, votes: { ...gameState.votes, [myId]: null } } });
     }
   },

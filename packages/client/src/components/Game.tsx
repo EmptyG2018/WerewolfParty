@@ -24,7 +24,7 @@ export function Game() {
   const [transitionPhase, setTransitionPhase] = useState<GamePhase | null>(null);
   const [voteHistoryOpen, setVoteHistoryOpen] = useState(false);
 
-  // Server-synced countdown from phaseEndsAt.
+  // 以服务端 phaseEndsAt 校准倒计时；本地 interval 只负责平滑刷新 UI。
   useEffect(() => {
     if (!gameState || gameState.paused || !gameState.phaseEndsAt) return;
     const syncTimer = () => {
@@ -50,6 +50,7 @@ export function Game() {
       gameState.phase === GamePhase.GAME_OVER ||
       gameState.phase.startsWith('night_')
     ) return;
+    // 夜晚阶段不弹转场，避免遮住夜间技能操作。
     setTransitionPhase(gameState.phase);
     const timeout = setTimeout(() => setTransitionPhase(null), 1200);
     return () => clearTimeout(timeout);
@@ -255,6 +256,7 @@ export function Game() {
   };
 
   const canAct = () => {
+    // 猎人/狼王开枪时本人已经死亡，所以这两个阶段要绕过“存活才能行动”的通用限制。
     if (isPaused) return false;
     if (currentPhase === GamePhase.HUNTER_SHOOT) return roleHasAbility(myRole, RoleAbility.HUNTER_SHOOT) && !isAlive;
     if (currentPhase === GamePhase.WOLF_KING_SHOOT) return roleHasAbility(myRole, RoleAbility.WOLF_KING_SHOOT) && !isAlive;
@@ -318,7 +320,7 @@ export function Game() {
   const currentSpeakerName = currentSpeakerId ? getPlayerName(currentSpeakerId) : '';
   const canFinishSpeaking = isSpeakingPhase && isMyTurn && (isAlive || isLastWordsPhase);
 
-  // 狼人投票相关
+  // 狼人投票相关：选择可修改，确认后锁定；服务端最终按确认票结算。
   const isWolf = isWolfRole(myRole);
   const isWolfPhase = currentPhase === GamePhase.NIGHT_WEREWOLF;
   const currentDayDeaths = deathEvents.filter(event => event.day === gameState.day);

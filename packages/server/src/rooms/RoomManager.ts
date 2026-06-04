@@ -7,6 +7,7 @@ type TypedServer = Server<ClientToServerEvents, ServerToClientEvents>;
 
 export class RoomManager {
   private rooms: Map<string, Room> = new Map();
+  // socketId 只代表当前连接；sessionId/playerId 才是可重连的稳定玩家身份。
   private playerRooms: Map<string, string> = new Map();
   private socketPlayers: Map<string, string> = new Map();
   private sessionRooms: Map<string, string> = new Map();
@@ -87,6 +88,7 @@ export class RoomManager {
   }
 
   private findNextPlayerNumber(room: Room): number {
+    // playerNumber 用于局内口头称呼，离线重连或换座时不变化。
     const used = new Set(room.players.map(player => player.playerNumber ?? player.seatIndex + 1));
     for (let i = 1; i <= room.config.maxPlayers; i++) {
       if (!used.has(i)) return i;
@@ -206,6 +208,7 @@ export class RoomManager {
     }
 
     player.online = true;
+    // 新 socket 重新加入房间广播频道和个人私密频道，用于接收身份/技能提示。
     this.playerRooms.set(socket.id, roomId);
     this.socketPlayers.set(socket.id, player.id);
     socket.join(roomId);
@@ -238,6 +241,7 @@ export class RoomManager {
       this.rooms.delete(roomId);
       this.onRoomDeleted?.(roomId);
     } else if (room.hostId === playerId) {
+      // 房主离开时把房主权限交给当前列表第一位玩家。
       room.hostId = room.players[0].id;
       room.players[0].isHost = true;
     }
@@ -431,6 +435,7 @@ export class RoomManager {
     const room = this.rooms.get(roomId);
     const player = room?.players.find(p => p.id === playerId);
     if (player) {
+      // 断线不立即移除玩家，保留 sessionId 以便刷新或网络恢复后重连。
       player.online = false;
       this.cancelPendingSwap(playerId, roomId);
       this.broadcastRoomUpdate(roomId);

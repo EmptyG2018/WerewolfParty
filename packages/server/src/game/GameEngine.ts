@@ -66,6 +66,7 @@ export class GameEngine {
     nightActions: Map<Role, { targetId: string }>,
     witchSavedThisNight = false
   ): NightResolution {
+    // 夜晚结算顺序：狼刀先被守卫/女巫解药抵消，再合并毒药死亡，避免重复死亡记录。
     let killedPlayerId = nightActions.get(Role.WEREWOLF)?.targetId ?? null;
     const poisonedPlayerId = nightActions.get(Role.WITCH)?.targetId ?? null;
 
@@ -86,6 +87,7 @@ export class GameEngine {
     if (killedPlayerId) {
       deadPlayerIds.add(killedPlayerId);
       const killedPlayer = room.players.find(p => p.id === killedPlayerId);
+      // 当前规则：狼王只有被狼人夜刀死亡时进入开枪阶段；被毒、被投、被技能带走不在这里触发。
       if (killedPlayer?.role && roleHasAbility(killedPlayer.role, RoleAbility.WOLF_KING_SHOOT)) {
         wolfKingCanShoot = true;
       }
@@ -145,6 +147,7 @@ export class GameEngine {
     const alivePlayers = room.players.filter(p => p.status === 'alive');
     const hybridRoles = room.config.hybridRoles || [];
 
+    // 屠边规则：狼人全灭好人胜；神职或民任一边被屠尽狼人胜。
     const aliveWolves = alivePlayers.filter(p => p.role !== null && isWolfRole(p.role, hybridRoles));
     if (aliveWolves.length === 0) return 'villager';
 
@@ -178,6 +181,7 @@ export class GameEngine {
 
     // 随机正序或反序
     const forward = Math.random() < 0.5;
+    // 反序时仍以“被刀者旁边的人”为起点，只是沿座位逆时针发言。
     const ordered = forward
       ? [...sorted.slice(startIdx), ...sorted.slice(0, startIdx)]
       : [...sorted.slice(0, startIdx).reverse(), ...sorted.slice(startIdx).reverse()];

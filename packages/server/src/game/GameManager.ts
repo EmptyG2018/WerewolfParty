@@ -32,12 +32,14 @@ export class GameManager {
   private io: TypedServer;
   private gameStates: Map<string, GameState> = new Map();
   private phaseTimers: Map<string, NodeJS.Timeout> = new Map();
+  // 暂停阶段时保留原回调，恢复后继续挂回同一个阶段推进逻辑。
   private phaseTimeoutCallbacks: Map<string, () => void> = new Map();
   private nightActions: Map<string, Map<Role, { targetId: string }>> = new Map();
   private roleConfirmations: Map<string, Set<string>> = new Map();  // roomId → confirmed player IDs
   private wolfVotes: Map<string, Map<string, string>> = new Map();  // roomId → (wolfId → targetId) 已确认
   private wolfSelections: Map<string, Map<string, string>> = new Map();  // roomId → (wolfId → targetId) 仅选择
   private witchSavedTonight: Map<string, boolean> = new Map();
+  // 房间同一时刻只会有一个待处理死亡技能；resume 用来回到被中断的主流程。
   private pendingHunterShots: Map<string, { playerId: string; resume: () => void }> = new Map();
   private hunterShotsUsed: Set<string> = new Set();
 
@@ -115,6 +117,7 @@ export class GameManager {
   }
 
   private setPhaseClock(gameState: GameState, phase: GamePhase, timer: number): number | null {
+    // 所有阶段时间以服务端 endsAt 为准，客户端只做展示和本地倒计时校正。
     const endsAt = timer > 0 ? Date.now() + timer * 1000 : null;
     gameState.phase = phase;
     gameState.phaseTimer = timer;
@@ -166,6 +169,7 @@ export class GameManager {
 
     this.pendingHunterShots.set(roomId, { playerId: hunterId, resume });
     this.emitPhaseChanged(roomId, GamePhase.HUNTER_SHOOT, 15);
+    // 只通知猎人本人显示操作入口；房间内其他玩家依赖 phaseChanged 看到阶段变化。
     this.io.to(hunterId).emit('game:hunterRequired', { playerId: hunterId });
 
     this.schedulePhaseTimeout(roomId, 15000, () => {
@@ -194,6 +198,7 @@ export class GameManager {
       resume();
       return;
     }
+    // 遗言复用 SpeakingState，使客户端同一套“发言完毕”按钮可以完成遗言。
     const speaking = { order: [playerId], currentIndex: 0, confirmed: [] };
     gameState.speaking = speaking;
     this.emitPhaseChanged(roomId, GamePhase.LAST_WORDS, 30);
@@ -273,6 +278,7 @@ export class GameManager {
 
     const confirmTime = room.config.roleConfirmTime;
     this.setPhaseClock(gameState, GamePhase.ROLE_CONFIRM, confirmTime);
+    // 狼队成员只发给狼人，避免好人客户端拿到完整狼队列表。
     const wolfTeam = room.players
       .filter(player => player.role !== null && isWolfRole(player.role, room.config.hybridRoles))
       .map(player => player.id);
@@ -350,6 +356,7 @@ export class GameManager {
     const gameState = this.gameStates.get(room.id);
     if (!gameState) return;
 
+    // 重连时重放私有信息和当前阶段，否则刷新页面会丢失身份/狼队视图。
     const wolfTeam = room.players
       .filter(roomPlayer => roomPlayer.role !== null && isWolfRole(roomPlayer.role, room.config.hybridRoles))
       .map(roomPlayer => roomPlayer.id);
@@ -486,6 +493,7 @@ export class GameManager {
 
     const phase = phases[index];
     if (!this.hasAliveActorForPhase(room, phase)) {
+      // 对应角色不存在或已死亡时跳过该夜晚子阶段，保证自动流程不停住。
       this.runNightPhases(roomId, phases, index + 1);
       return;
     }
@@ -728,6 +736,7 @@ export class GameManager {
 
     const wolves = room.players.filter(p => p.role !== null && isWolfRole(p.role, room.config.hybridRoles) && p.status === 'alive');
     const allWolvesConfirmed = wolves.length > 0 && wolves.every(wolf => votes?.has(wolf.id));
+    // 超时且狼队未全员确认时，系统随机选择一名非狼人，避免狼队拖延造成平安夜。
     const finalTarget = timedOut && !allWolvesConfirmed
       ? this.pickRandomAliveNonWolf(room)
       : this.resolveWolfVote(votes || new Map(), wolves);
@@ -938,6 +947,7 @@ export class GameManager {
     }
 
     if (result.wolfKingCanShoot) {
+      // 狼王先于天亮公告开枪；开枪结果会被带入 DAY_ANNOUNCE 一起展示。
       this.emitPhaseChanged(roomId, GamePhase.WOLF_KING_SHOOT, 15);
       this.io.to(result.killedPlayerId!).emit('game:wolfKingRequired', { playerId: result.killedPlayerId! });
 
@@ -959,6 +969,7 @@ export class GameManager {
     if (!room || !gameState) return;
 
     this.setPhaseClock(gameState, GamePhase.DAY_ANNOUNCE, 5);
+    // 当前规则只让被狼人夜刀的猎人在天亮公告后触发技能；被毒或技能带走不会触发。
     const hunterToShoot = deadPlayers
       .filter(deadPlayer => deadPlayer.reason === 'killed')
       .map(deadPlayer => room.players.find(p => p.id === deadPlayer.playerId))
@@ -979,6 +990,7 @@ export class GameManager {
     });
     this.schedulePhaseTimeout(roomId, 5000, () => {
       if (hunterToShoot) {
+        // 猎人技能会临时打断白天流程，处理完后继续进入白天发言。
         this.startHunterShot(roomId, hunterToShoot.id, () => this.startSpeakingPhase(roomId));
       } else {
         this.startSpeakingPhase(roomId);
@@ -1152,6 +1164,7 @@ export class GameManager {
     room.players
       .filter(player => player.status === 'alive')
       .forEach(player => {
+        // 超时未投票视为弃票，保证投票历史完整记录每个存活玩家。
         if (!Object.prototype.hasOwnProperty.call(gameState.votes, player.id)) {
           gameState.votes[player.id] = null;
         }
@@ -1192,6 +1205,7 @@ export class GameManager {
 
       this.startLastWords(roomId, eliminatedId, () => {
         if (player.role && roleHasAbility(player.role, RoleAbility.HUNTER_SHOOT)) {
+          // 白天被放逐的猎人先遗言，再决定是否开枪。
           this.startHunterShot(roomId, eliminatedId, () => this.afterDeathCheck(roomId));
           return;
         }
@@ -1230,6 +1244,7 @@ export class GameManager {
     if (!target) return;
 
     this.hunterShotsUsed.add(ctx.player.id);
+    // 被猎人开枪带走的目标只记录死亡，不再触发新的猎人/狼王死亡技能。
     const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
     if (shotPlayer) {
       this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot', day: ctx.gameState.day });
@@ -1258,6 +1273,7 @@ export class GameManager {
     if (!target) return false;
 
     this.hunterShotsUsed.add(ctx.player.id);
+    // 调试机器人路径与 socket 路径保持同一规则：技能击杀不再触发二次死亡技能。
     const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
     if (shotPlayer) {
       this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot', day: ctx.gameState.day });
@@ -1282,6 +1298,7 @@ export class GameManager {
     const target = this.getAliveTarget(ctx.room, targetId);
     if (!target) return;
 
+    // 狼王开枪同样不触发二次死亡技能，避免技能链式结算。
     const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
     if (shotPlayer) {
       this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot', day: ctx.gameState.day });
@@ -1309,6 +1326,7 @@ export class GameManager {
     const target = this.getAliveTarget(ctx.room, targetId);
     if (!target) return false;
 
+    // 调试机器人路径与 socket 路径保持同一规则：技能击杀不再触发二次死亡技能。
     const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
     if (shotPlayer) {
       this.io.to(ctx.room.id).emit('game:playerDead', { playerId: targetId, reason: 'shot', day: ctx.gameState.day });
