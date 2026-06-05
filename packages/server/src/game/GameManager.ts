@@ -82,7 +82,7 @@ export class GameManager {
   }
 
   private getPlayerNumber(player: Player): number {
-    return player.playerNumber ?? player.seatIndex + 1;
+    return player.seatIndex + 1;
   }
 
   private hasAliveActorForPhase(room: Room, phase: GamePhase): boolean {
@@ -138,6 +138,25 @@ export class GameManager {
     const endsAt = gameState ? this.setPhaseClock(gameState, phase, timer) : (timer > 0 ? Date.now() + timer * 1000 : null);
     this.io.to(roomId).emit('game:phaseChanged', { phase, timer, endsAt, speaking });
     return endsAt;
+  }
+
+  private emitWitchInfo(room: Room, player?: Player): void {
+    const actions = this.nightActions.get(room.id);
+    const killedPlayerId = actions?.get('wolfKill')?.targetId ?? null;
+    const recipients = player ? [player] : room.players;
+
+    recipients
+      .filter(candidate =>
+        candidate.status === 'alive' &&
+        candidate.role !== null &&
+        (
+          roleHasAbility(candidate.role, RoleAbility.WITCH_SAVE) ||
+          roleHasAbility(candidate.role, RoleAbility.WITCH_POISON)
+        )
+      )
+      .forEach(candidate => {
+        this.io.to(candidate.id).emit('game:witchInfo', { killedPlayerId });
+      });
   }
 
   private clearPhaseTimer(roomId: string, clearCallback = true): void {
@@ -410,6 +429,10 @@ export class GameManager {
       wolfVotes?.forEach((targetId, wolfId) => { wolfVotesObj[wolfId] = targetId; });
       this.io.to(player.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj });
     }
+
+    if (gameState.phase === GamePhase.NIGHT_WITCH) {
+      this.emitWitchInfo(room, player);
+    }
   }
 
   pauseGame(socket: TypedSocket): void {
@@ -517,9 +540,12 @@ export class GameManager {
     }
 
     this.emitPhaseChanged(roomId, phase, 30);
+    if (phase === GamePhase.NIGHT_WITCH) {
+      this.emitWitchInfo(room);
+    }
 
     this.schedulePhaseTimeout(roomId, 30000, () => {
-      // 狼人阶段超时：用已确认的投票结算（未确认=弃票）
+      // 狼人阶段超时：未确认视为弃票，按已确认狼票结算。
       if (phase === GamePhase.NIGHT_WEREWOLF) {
         this.resolveWolfPhase(roomId, true);
       } else {
@@ -746,18 +772,16 @@ export class GameManager {
     return { ok: true };
   }
 
-  /** 狼人阶段结算：全部弃票=平安夜，平票随机，否则多数票 */
-  private resolveWolfPhase(roomId: string, timedOut = false): void {
+  /** 狼人阶段结算：未确认=弃票；无已确认狼票时随机刀存活非狼人，平票随机，否则多数票 */
+  private resolveWolfPhase(roomId: string, _timedOut = false): void {
     const room = this.roomManager.getRoom(roomId);
     const votes = this.wolfVotes.get(roomId);
     if (!room) return;
 
     const wolves = room.players.filter(p => p.role !== null && isWolfRole(p.role, room.config.hybridRoles) && p.status === 'alive');
-    const allWolvesConfirmed = wolves.length > 0 && wolves.every(wolf => votes?.has(wolf.id));
-    // 超时且狼队未全员确认时，系统随机选择一名非狼人，避免狼队拖延造成平安夜。
-    const finalTarget = timedOut && !allWolvesConfirmed
-      ? this.pickRandomAliveNonWolf(room)
-      : this.resolveWolfVote(votes || new Map(), wolves);
+    const finalTarget = (votes && votes.size > 0)
+      ? this.resolveWolfVote(votes, wolves)
+      : this.pickRandomAliveNonWolf(room);
 
     const actions = this.nightActions.get(roomId);
     if (actions && finalTarget) actions.set('wolfKill', { targetId: finalTarget });
@@ -827,7 +851,7 @@ export class GameManager {
       socket.emit('game:error', { message: '今晚没有可救目标' });
       return;
     }
-    if (killedTargetId === ctx.player.id) {
+    if (killedTargetId === ctx.player.id && !ctx.room.config.allowWitchSelfSave) {
       socket.emit('game:error', { message: '女巫不能自救' });
       return;
     }

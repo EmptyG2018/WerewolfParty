@@ -17,15 +17,24 @@ interface CustomConfig {
   hybridRoles: Set<Role>;
 }
 
-function toRoomConfig(custom: CustomConfig): RoomConfig {
+function toRoomConfig(custom: CustomConfig, allowWitchSelfSave: boolean): RoomConfig {
   const roles: Role[] = [Role.WEREWOLF, ...custom.enabledExtras];
-  return { maxPlayers: custom.maxPlayers, roles, wolfCount: custom.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime, hybridRoles: [...custom.hybridRoles] };
+  return {
+    maxPlayers: custom.maxPlayers,
+    roles,
+    wolfCount: custom.wolfCount,
+    voteTime: DEFAULT_ROOM_CONFIG.voteTime,
+    roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime,
+    allowWitchSelfSave,
+    hybridRoles: [...custom.hybridRoles]
+  };
 }
 
 export function CreateRoom() {
   const { pendingName, createRoom, setCurrentView, setPendingName, error } = useGameStore();
   const [mode, setMode] = useState<'preset' | 'custom'>('preset');
   const [selectedPreset, setSelectedPreset] = useState<string>(ROLE_PRESETS[0].id);
+  const [allowWitchSelfSave, setAllowWitchSelfSave] = useState(DEFAULT_ROOM_CONFIG.allowWitchSelfSave);
 
   const [custom, setCustom] = useState<CustomConfig>({
     maxPlayers: 9,
@@ -36,8 +45,19 @@ export function CreateRoom() {
 
   // --- Derived ---
   const currentConfig = mode === 'preset'
-    ? (() => { const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!; return { maxPlayers: p.playerCount, roles: p.roles, wolfCount: p.wolfCount, voteTime: DEFAULT_ROOM_CONFIG.voteTime, roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime, hybridRoles: p.hybridRoles }; })()
-    : toRoomConfig(custom);
+    ? (() => {
+      const p = ROLE_PRESETS.find(pr => pr.id === selectedPreset)!;
+      return {
+        maxPlayers: p.playerCount,
+        roles: p.roles,
+        wolfCount: p.wolfCount,
+        voteTime: DEFAULT_ROOM_CONFIG.voteTime,
+        roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime,
+        allowWitchSelfSave,
+        hybridRoles: p.hybridRoles
+      };
+    })()
+    : toRoomConfig(custom, allowWitchSelfSave);
   const currentCounts = calcCampCounts(currentConfig);
   const enabledWolfExtras = [...custom.enabledExtras].filter(role => isWolfRole(role)).length;
 
@@ -128,6 +148,7 @@ export function CreateRoom() {
                         wolfCount: preset.wolfCount,
                         voteTime: DEFAULT_ROOM_CONFIG.voteTime,
                         roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime,
+                        allowWitchSelfSave,
                         hybridRoles: preset.hybridRoles
                       }).wolves}狼
                     </div>
@@ -328,6 +349,28 @@ export function CreateRoom() {
             )}
           </>
         )}
+
+        {/* Rule options */}
+        <div className="animate-slide-up">
+          <p className="text-xs text-moon-dim tracking-wider uppercase mb-3">规则选项</p>
+          <button
+            onClick={() => setAllowWitchSelfSave(prev => !prev)}
+            className="w-full glass rounded-2xl p-4 flex items-center gap-3 text-left active:scale-[0.99] transition-transform"
+          >
+            <div className="w-10 h-10 rounded-xl bg-poison/10 flex items-center justify-center text-lg">
+              {ROLES[Role.WITCH].icon}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-moon">允许女巫自救</div>
+              <div className="text-[10px] text-moon-mist mt-0.5">
+                默认关闭；开启后女巫可用解药救自己
+              </div>
+            </div>
+            <div className={`w-11 h-6 rounded-full p-0.5 transition-colors ${allowWitchSelfSave ? 'bg-poison' : 'bg-forest-50'}`}>
+              <div className={`w-5 h-5 rounded-full bg-white transition-transform ${allowWitchSelfSave ? 'translate-x-5' : 'translate-x-0'}`} />
+            </div>
+          </button>
+        </div>
       </div>
 
       {/* Error */}

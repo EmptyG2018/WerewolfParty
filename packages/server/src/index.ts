@@ -69,6 +69,10 @@ io.on('connection', (socket) => {
     roomManager.swapSeat(socket, data.targetSeat);
   });
 
+  socket.on('room:cancelSwap', () => {
+    roomManager.cancelSwap(socket);
+  });
+
   socket.on('room:acceptSwap', () => {
     roomManager.acceptSwap(socket);
   });

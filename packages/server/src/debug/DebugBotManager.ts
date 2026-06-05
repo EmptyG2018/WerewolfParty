@@ -15,7 +15,6 @@ export interface DebugPerspective {
   playerId: string;
   name: string;
   seatIndex: number;
-  playerNumber?: number;
   role: Role | null;
   isHost: boolean;
 }
@@ -134,7 +133,6 @@ export class DebugBotManager {
           playerId: player.id,
           name: player.name,
           seatIndex: player.seatIndex,
-          playerNumber: player.playerNumber,
           role: player.role,
           isHost: player.isHost
         })),

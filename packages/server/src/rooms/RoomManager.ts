@@ -11,7 +11,7 @@ export class RoomManager {
   private playerRooms: Map<string, string> = new Map();
   private socketPlayers: Map<string, string> = new Map();
   private sessionRooms: Map<string, string> = new Map();
-  private pendingSwaps: Map<string, SeatSwapRequest> = new Map(); // roomId -> pending request
+  private pendingSwaps: Map<string, SeatSwapRequest> = new Map(); // fromPlayerId -> pending request
   private io: TypedServer | null = null;
   private onRoomDeleted: ((roomId: string) => void) | null = null;
 
@@ -306,6 +306,17 @@ export class RoomManager {
 
   // ============ 座位交换 ============
 
+  private findPendingSwapByPlayer(roomId: string, playerId: string): SeatSwapRequest | null {
+    return Array.from(this.pendingSwaps.values()).find(request => {
+      return request.fromId === playerId || request.targetId === playerId;
+    }) ?? null;
+  }
+
+  private getPendingSwapFromPlayer(roomId: string, playerId: string): SeatSwapRequest | null {
+    const request = this.pendingSwaps.get(playerId);
+    return request?.fromId === playerId ? request : null;
+  }
+
   swapSeat(socket: TypedSocket, targetSeat: number): void {
     const room = this.getRoomBySocket(socket);
     if (!room || room.status !== 'waiting') return;
@@ -319,13 +330,16 @@ export class RoomManager {
     }
     if (player.seatIndex === targetSeat) return;
 
-    // 检查是否已有待处理的交换请求
-    if (this.pendingSwaps.has(room.id)) {
-      socket.emit('room:error', { message: '有其他交换请求正在处理中' });
+    const targetPlayer = room.players.find(p => p.seatIndex === targetSeat);
+    const myPending = this.findPendingSwapByPlayer(room.id, player.id);
+    if (myPending) {
+      socket.emit('room:error', { message: '你已有座位交换正在处理中' });
       return;
     }
-
-    const targetPlayer = room.players.find(p => p.seatIndex === targetSeat);
+    if (targetPlayer && this.findPendingSwapByPlayer(room.id, targetPlayer.id)) {
+      socket.emit('room:error', { message: `${targetPlayer.name} 正在与其他玩家交换位置` });
+      return;
+    }
 
     if (!targetPlayer) {
       // 空座，直接交换
@@ -339,11 +353,33 @@ export class RoomManager {
         targetSeat,
         targetId: targetPlayer.id
       };
-      this.pendingSwaps.set(room.id, request);
+      this.pendingSwaps.set(player.id, request);
 
       this.io?.to(targetPlayer.id).emit('room:swapRequest', request);
       socket.emit('room:swapResult', { success: true, message: '已发送交换请求，等待对方确认' });
     }
+  }
+
+  cancelSwap(socket: TypedSocket): void {
+    const roomId = this.playerRooms.get(socket.id);
+    if (!roomId) return;
+    const playerId = this.socketPlayers.get(socket.id);
+    if (!playerId) return;
+
+    const pending = this.getPendingSwapFromPlayer(roomId, playerId);
+    if (!pending || pending.fromId !== playerId) {
+      socket.emit('room:error', { message: '没有可取消的交换请求' });
+      return;
+    }
+
+    this.pendingSwaps.delete(pending.fromId);
+    if (pending.targetId) {
+      this.io?.to(pending.targetId).emit('room:swapCancelled', {
+        request: pending,
+        message: '对方已取消交换请求'
+      });
+    }
+    socket.emit('room:swapResult', { success: false, message: '已取消交换请求' });
   }
 
   acceptSwap(socket: TypedSocket): void {
@@ -352,7 +388,7 @@ export class RoomManager {
     const playerId = this.socketPlayers.get(socket.id);
     if (!playerId) return;
 
-    const pending = this.pendingSwaps.get(roomId);
+    const pending = this.findPendingSwapByPlayer(roomId, playerId);
     if (!pending || pending.targetId !== playerId) {
       socket.emit('room:error', { message: '没有待处理的交换请求' });
       return;
@@ -364,15 +400,26 @@ export class RoomManager {
     const fromPlayer = room.players.find(p => p.id === pending.fromId);
     const targetPlayer = room.players.find(p => p.id === pending.targetId);
     if (!fromPlayer || !targetPlayer) {
-      this.pendingSwaps.delete(roomId);
+      this.pendingSwaps.delete(pending.fromId);
+      this.io?.to(pending.fromId).emit('room:swapResult', { success: false, message: '对方已离开，交换取消' });
+      if (pending.targetId) {
+        this.io?.to(pending.targetId).emit('room:swapCancelled', {
+          request: pending,
+          message: '对方已离开，交换取消'
+        });
+      }
       return;
     }
 
     // 交换座位
     fromPlayer.seatIndex = pending.targetSeat;
     targetPlayer.seatIndex = pending.fromSeat;
-    this.pendingSwaps.delete(roomId);
+    this.pendingSwaps.delete(pending.fromId);
 
+    this.io?.to(pending.fromId).emit('room:swapResult', { success: true, message: '交换位置成功' });
+    if (pending.targetId) {
+      this.io?.to(pending.targetId).emit('room:swapResult', { success: true, message: '交换位置成功' });
+    }
     this.broadcastRoomUpdate(roomId);
   }
 
@@ -382,28 +429,31 @@ export class RoomManager {
     const playerId = this.socketPlayers.get(socket.id);
     if (!playerId) return;
 
-    const pending = this.pendingSwaps.get(roomId);
+    const pending = this.findPendingSwapByPlayer(roomId, playerId);
     if (!pending || pending.targetId !== playerId) {
       socket.emit('room:error', { message: '没有待处理的交换请求' });
       return;
     }
 
-    this.pendingSwaps.delete(roomId);
+    this.pendingSwaps.delete(pending.fromId);
 
     // 通知发起者
     this.io?.to(pending.fromId).emit('room:swapResult', { success: false, message: '对方拒绝了交换请求' });
   }
 
-  private cancelPendingSwap(socketId: string, roomId: string): void {
-    const pending = this.pendingSwaps.get(roomId);
+  private cancelPendingSwap(playerId: string, roomId: string): void {
+    const pending = this.findPendingSwapByPlayer(roomId, playerId);
     if (!pending) return;
 
-    if (pending.fromId === socketId || pending.targetId === socketId) {
-      this.pendingSwaps.delete(roomId);
-      // 通知另一方
-      const otherId = pending.fromId === socketId ? pending.targetId : pending.fromId;
-      if (otherId) {
-        this.io?.to(otherId).emit('room:swapResult', { success: false, message: '对方已离开，交换取消' });
+    if (pending.fromId === playerId || pending.targetId === playerId) {
+      this.pendingSwaps.delete(pending.fromId);
+      if (pending.fromId === playerId && pending.targetId) {
+        this.io?.to(pending.targetId).emit('room:swapCancelled', {
+          request: pending,
+          message: '对方已离开，交换取消'
+        });
+      } else {
+        this.io?.to(pending.fromId).emit('room:swapResult', { success: false, message: '对方已离开，交换取消' });
       }
     }
   }

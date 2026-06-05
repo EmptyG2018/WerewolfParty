@@ -53,6 +53,7 @@ interface GameStore {
   // 游戏结果
   seerResult: { playerId: string; isWerewolf: boolean } | null;
   setSeerResult: (result: { playerId: string; isWerewolf: boolean } | null) => void;
+  witchInfo: { killedPlayerId: string | null } | null;
 
   // 错误信息
   error: string | null;
@@ -61,6 +62,8 @@ interface GameStore {
   // 座位交换
   pendingSwapRequest: SeatSwapRequest | null;
   setPendingSwapRequest: (req: SeatSwapRequest | null) => void;
+  outgoingSwapRequest: SeatSwapRequest | null;
+  setOutgoingSwapRequest: (req: SeatSwapRequest | null) => void;
 
   // 身份确认
   roleConfirmed: boolean;
@@ -89,6 +92,7 @@ interface GameStore {
 
   // 座位操作
   swapSeat: (targetSeat: number) => void;
+  cancelSwap: () => void;
   acceptSwap: () => void;
   rejectSwap: () => void;
 
@@ -124,8 +128,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   systemMessages: [],
   speaking: null,
   seerResult: null,
+  witchInfo: null,
   error: null,
   pendingSwapRequest: null,
+  outgoingSwapRequest: null,
   roleConfirmed: false,
   confirmedPlayers: [],
   wolfVotes: {},
@@ -144,6 +150,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setSeerResult: (result) => set({ seerResult: result }),
   setError: (error) => set({ error }),
   setPendingSwapRequest: (req) => set({ pendingSwapRequest: req }),
+  setOutgoingSwapRequest: (req) => set({ outgoingSwapRequest: req }),
 
   initSocket: () => {
     if (socketInitialized) return;
@@ -196,6 +203,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         nextState.gameState = null;
         nextState.speaking = null;
         nextState.seerResult = null;
+        nextState.witchInfo = null;
         nextState.roleConfirmed = false;
         nextState.confirmedPlayers = [];
         nextState.wolfVotes = {};
@@ -208,7 +216,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     socket.on('room:error', ({ message }) => {
-      set({ error: message });
+      set({ error: message, outgoingSwapRequest: null });
       setTimeout(() => set({ error: null }), 3000);
     });
 
@@ -231,10 +239,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     socket.on('room:swapResult', ({ success, message }) => {
+      const isWaitingAck = success && message?.includes('等待对方确认');
+      if (!isWaitingAck) {
+        set({ outgoingSwapRequest: null });
+      }
       if (!success && message) {
         set({ error: message });
         setTimeout(() => set({ error: null }), 3000);
       }
+    });
+
+    socket.on('room:swapCancelled', ({ message }) => {
+      set({ pendingSwapRequest: null, error: message });
+      setTimeout(() => set({ error: null }), 3000);
     });
 
     socket.on('game:started', ({ gameState, myRole, wolfTeam }) => {
@@ -244,6 +261,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         currentView: 'game',
         systemMessages: [],
         speaking: null,
+        witchInfo: null,
         roleConfirmed: false,
         confirmedPlayers: [],
         wolfVotes: {},
@@ -285,7 +303,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
         // 新阶段重置狼人投票和确认状态
         if (phase === GamePhase.NIGHT_WEREWOLF) {
           // 新一晚重新开始狼队选择/确认，上一晚的投票结果不能沿用。
-          set({ wolfVotes: {}, wolfSelections: {}, voteResult: null });
+          set({ wolfVotes: {}, wolfSelections: {}, voteResult: null, witchInfo: null });
+        }
+        if (phase !== GamePhase.NIGHT_WITCH) {
+          set({ witchInfo: null });
         }
         if (phase === GamePhase.DAY_VOTE) {
           set({ voteResult: null });
@@ -361,6 +382,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     socket.on('game:seerResult', ({ playerId, isWerewolf }) => {
       set({ seerResult: { playerId, isWerewolf } });
+    });
+
+    socket.on('game:witchInfo', ({ killedPlayerId }) => {
+      set({ witchInfo: { killedPlayerId } });
     });
 
     socket.on('game:systemMessage', (message) => {
@@ -480,7 +505,25 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   swapSeat: (targetSeat) => {
+    const { room, myId } = get();
+    const me = room?.players.find(player => player.id === myId);
+    const targetPlayer = room?.players.find(player => player.seatIndex === targetSeat);
+    if (me && targetPlayer) {
+      set({
+        outgoingSwapRequest: {
+          fromId: me.id,
+          fromSeat: me.seatIndex,
+          targetSeat,
+          targetId: targetPlayer.id
+        }
+      });
+    }
     socket.emit('room:swapSeat', { targetSeat });
+  },
+
+  cancelSwap: () => {
+    socket.emit('room:cancelSwap');
+    set({ outgoingSwapRequest: null });
   },
 
   acceptSwap: () => {

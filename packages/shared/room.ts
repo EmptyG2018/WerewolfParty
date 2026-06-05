@@ -7,6 +7,7 @@ export interface RoomConfig {
   wolfCount: number;
   voteTime: number;
   roleConfirmTime: number;     // 确认身份倒计时（秒）
+  allowWitchSelfSave: boolean; // 是否允许女巫自救
   hybridRoles: Role[];
 }
 
@@ -25,6 +26,7 @@ export const DEFAULT_ROOM_CONFIG: RoomConfig = {
   wolfCount: 3,
   voteTime: 60,
   roleConfirmTime: 30,
+  allowWitchSelfSave: false,
   hybridRoles: []
 };
 

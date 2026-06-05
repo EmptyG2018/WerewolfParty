@@ -12,7 +12,7 @@ type PendingConfirm = {
 
 export function Game() {
   const {
-    room, myId, myRole, gameState, speaking, seerResult, error,
+    room, myId, myRole, gameState, speaking, seerResult, witchInfo, error,
     roleConfirmed, confirmedPlayers, wolfVotes, wolfSelections, wolfTeam, deathEvents, voteResult,
     confirmRole, werewolfKill, wolfConfirmVote, seerCheck, witchSave, witchPoison, guardProtect,
     vote, speakingDone, hunterShoot, wolfKingShoot, wolfSelfReveal, whiteWolfKingExplode, witchPass,
@@ -66,7 +66,7 @@ export function Game() {
   const isNight = currentPhase.startsWith('night_');
   const isHost = room.hostId === myId;
   const isPaused = gameState.paused;
-  const getPlayerNumber = (player: { playerNumber?: number; seatIndex: number }) => player.playerNumber ?? player.seatIndex + 1;
+  const getPlayerNumber = (player: { seatIndex: number }) => player.seatIndex + 1;
 
   const getPlayerName = (playerId: string | null) => {
     if (!playerId) return '无人';
@@ -181,6 +181,7 @@ export function Game() {
   const myWolfVote = myId ? wolfVotes[myId] : undefined;
   const myWolfSelection = myId ? wolfSelections[myId] : undefined;
   const hasConfirmedWolfVote = myId ? Object.prototype.hasOwnProperty.call(wolfVotes, myId) : false;
+  const witchKilledTargetName = witchInfo ? getPlayerName(witchInfo.killedPlayerId) : null;
   const canSelfReveal = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WOLF_SELF_REVEAL)
     && (currentPhase === GamePhase.DAY_SPEAKING || currentPhase === GamePhase.DAY_VOTE);
   const canWhiteWolfKingExplode = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WHITE_WOLF_KING_EXPLODE)
@@ -915,11 +916,11 @@ export function Game() {
                 <button
                   onClick={() => confirmThen({
                     title: '使用解药',
-                    message: '确认使用解药？解药每局只能使用一次。',
+                    message: `确认救 ${witchKilledTargetName ?? '被袭击玩家'}？解药每局只能使用一次。`,
                     confirmLabel: '确认救人',
                     tone: 'safe'
                   }, witchSave)}
-                  disabled={isPaused}
+                  disabled={isPaused || !witchInfo?.killedPlayerId}
                   className="px-5 py-3.5 rounded-xl bg-gradient-to-r from-heal-dark to-heal text-white font-display text-sm shrink-0 active:scale-95 transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   解药 💊
@@ -993,6 +994,14 @@ export function Game() {
                 </>
               )}
             </div>
+            {currentPhase === GamePhase.NIGHT_WITCH && roleHasAbility(myRole, RoleAbility.WITCH_SAVE) && (
+              <div className="mt-3 rounded-xl bg-forest-50/50 px-3 py-2 flex items-center justify-between gap-3">
+                <span className="text-[10px] text-moon-dim tracking-wider">今晚被袭击</span>
+                <span className={`text-sm font-medium ${witchInfo?.killedPlayerId ? 'text-heal-400' : 'text-moon-mist'}`}>
+                  {witchInfo?.killedPlayerId ? witchKilledTargetName : '无人'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}

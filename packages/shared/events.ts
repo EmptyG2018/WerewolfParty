@@ -11,6 +11,7 @@ export interface ClientToServerEvents {
   'room:start': () => void;
   'room:reset': () => void;
   'room:swapSeat': (data: { targetSeat: number }) => void;
+  'room:cancelSwap': () => void;
   'room:acceptSwap': () => void;
   'room:rejectSwap': () => void;
   'game:confirmRole': () => void;
@@ -43,6 +44,7 @@ export interface ServerToClientEvents {
   'room:playerJoined': (data: { player: Player }) => void;
   'room:playerLeft': (data: { playerId: string }) => void;
   'room:swapRequest': (data: SeatSwapRequest) => void;
+  'room:swapCancelled': (data: { request: SeatSwapRequest; message: string }) => void;
   'room:swapResult': (data: { success: boolean; message?: string }) => void;
   'game:started': (data: { gameState: GameState; myRole: Role; wolfTeam?: string[] }) => void;
   'game:phaseChanged': (data: { phase: GamePhase; timer: number; endsAt: number | null; speaking?: SpeakingState }) => void;
@@ -51,6 +53,7 @@ export interface ServerToClientEvents {
   'game:speakingUpdate': (data: { speaking: SpeakingState }) => void;
   'game:playerDead': (data: { playerId: string; reason: DeathReason; day: number }) => void;
   'game:seerResult': (data: { playerId: string; isWerewolf: boolean }) => void;
+  'game:witchInfo': (data: { killedPlayerId: string | null }) => void;
   'game:wolfVoteUpdate': (data: { wolfVotes: Record<string, string> }) => void;
   'game:wolfSelectionUpdate': (data: { selections: Record<string, string> }) => void;
   'game:roleConfirmed': (data: { playerId: string }) => void;

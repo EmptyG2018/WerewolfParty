@@ -3,7 +3,10 @@ import { useGameStore } from '../stores/gameStore';
 import { Role, ROLES, Player, getCampCounts, getRoleCounts, isWolfRole } from '@werewolf/shared';
 
 export function Room() {
-  const { room, myId, startGame, leaveRoom, error, pendingSwapRequest, swapSeat, acceptSwap, rejectSwap } = useGameStore();
+  const {
+    room, myId, startGame, leaveRoom, error, pendingSwapRequest, outgoingSwapRequest,
+    swapSeat, cancelSwap, acceptSwap, rejectSwap
+  } = useGameStore();
   const [copied, setCopied] = useState(false);
 
   if (!room) return null;
@@ -23,7 +26,11 @@ export function Room() {
   const { wolves, gods, villagers } = getCampCounts(room.config);
   const roleCounts = getRoleCounts(room.config);
   const wolfExtraRoles = room.config.roles.filter(role => isWolfRole(role) && role !== Role.WEREWOLF);
-  const getPlayerNumber = (player: Player) => player.playerNumber ?? player.seatIndex + 1;
+  const getSeatNumber = (player: Player) => player.seatIndex + 1;
+  const getPlayerName = (playerId: string | null) => {
+    if (!playerId) return '空座位';
+    return room.players.find(player => player.id === playerId)?.name ?? '未知玩家';
+  };
 
   // 构建座位表：按座位号排列，null 表示空座
   const seats: (Player | null)[] = Array.from({ length: room.config.maxPlayers }, () => null);
@@ -35,8 +42,12 @@ export function Room() {
   const handleSeatClick = (seatIndex: number) => {
     if (seatIndex === mySeat) return;
     if (room.status !== 'waiting') return;
+    if (pendingSwapRequest || outgoingSwapRequest) return;
     swapSeat(seatIndex);
   };
+
+  const incomingPlayerName = pendingSwapRequest ? getPlayerName(pendingSwapRequest.fromId) : '';
+  const outgoingPlayerName = outgoingSwapRequest ? getPlayerName(outgoingSwapRequest.targetId) : '';
 
   return (
     <div className="flex flex-col min-h-dvh relative">
@@ -83,14 +94,15 @@ export function Room() {
             玩家 <span className="text-moon font-medium">{room.players.length}</span>
             <span className="text-moon-mist">/{room.config.maxPlayers}</span>
           </h3>
-          <span className="text-[10px] text-moon-mist">点击空座可换位</span>
+          <span className="text-[10px] text-moon-mist">点击座位可换位</span>
         </div>
 
         <div className="grid grid-cols-2 gap-2 stagger-children">
           {seats.map((player, seatIndex) => {
             const isMe = player?.id === myId;
             const isEmpty = player === null;
-            const isClickable = room.status === 'waiting' && seatIndex !== mySeat;
+            const isSwapBusy = Boolean(pendingSwapRequest || outgoingSwapRequest);
+            const isClickable = room.status === 'waiting' && seatIndex !== mySeat && !isSwapBusy;
 
             return (
               <button
@@ -105,7 +117,7 @@ export function Room() {
                     : 'glass active:scale-[0.97]'
                 } ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
               >
-                {/* 玩家编号 */}
+                {/* 座位号 */}
                 <div className="relative shrink-0">
                   <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold ${
                     isEmpty
@@ -116,9 +128,9 @@ export function Room() {
                   }`}>
                     {isEmpty ? seatIndex + 1 : player.name.charAt(0)}
                   </div>
-                  {/* 稳定玩家编号角标 */}
+                  {/* 固定座位号角标 */}
                   <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-forest-100 flex items-center justify-center text-[8px] text-moon-dim font-bold border border-forest-50/30">
-                    {isEmpty ? seatIndex + 1 : getPlayerNumber(player)}
+                    {isEmpty ? seatIndex + 1 : getSeatNumber(player)}
                   </div>
                   {!isEmpty && player.id === room.hostId && (
                     <div className="absolute -top-1.5 -right-1.5 text-[10px]">👑</div>
@@ -191,6 +203,19 @@ export function Room() {
               ))}
             </div>
           </div>
+          <div className="mt-2 bg-forest-50/50 rounded-xl p-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-moon-mist text-[10px] tracking-wider mb-1">规则选项</div>
+              <div className="text-xs text-moon-dim">女巫自救</div>
+            </div>
+            <span className={`text-xs px-2 py-1 rounded-lg ${
+              room.config.allowWitchSelfSave
+                ? 'bg-poison/15 text-poison'
+                : 'bg-white/[0.05] text-moon-mist'
+            }`}>
+              {room.config.allowWitchSelfSave ? '允许' : '禁止'}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -205,14 +230,14 @@ export function Room() {
       {pendingSwapRequest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-forest/90 backdrop-blur-sm">
           <div className="glass rounded-3xl p-6 w-full max-w-sm text-center space-y-4 animate-slide-up">
-            <div className="text-3xl">🔄</div>
+            <div className="text-3xl">↔</div>
             <div>
               <div className="text-sm text-moon-dim mb-1">座位交换请求</div>
               <div className="font-display text-lg text-moon">
-                座位 {pendingSwapRequest.fromSeat + 1} ↔ 座位 {pendingSwapRequest.targetSeat + 1}
+                {incomingPlayerName} 想和你交换位置
               </div>
               <div className="text-xs text-moon-mist mt-2">
-                对方想和你交换座位
+                座位 {pendingSwapRequest.fromSeat + 1} ↔ 座位 {pendingSwapRequest.targetSeat + 1}
               </div>
             </div>
             <div className="flex gap-3">
@@ -229,6 +254,30 @@ export function Room() {
                 同意
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Outgoing Swap Modal */}
+      {outgoingSwapRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-forest/90 backdrop-blur-sm">
+          <div className="glass rounded-3xl p-6 w-full max-w-sm text-center space-y-4 animate-slide-up">
+            <div className="mx-auto w-10 h-10 rounded-full border-2 border-gold/30 border-t-gold animate-spin" />
+            <div>
+              <div className="text-sm text-moon-dim mb-1">正在交换位置</div>
+              <div className="font-display text-lg text-moon">
+                正在与 {outgoingPlayerName} 交换位置
+              </div>
+              <div className="text-xs text-moon-mist mt-2">
+                座位 {outgoingSwapRequest.fromSeat + 1} ↔ 座位 {outgoingSwapRequest.targetSeat + 1}
+              </div>
+            </div>
+            <button
+              onClick={cancelSwap}
+              className="w-full py-3 rounded-xl font-display text-sm text-moon-dim glass hover:bg-white/[0.08] transition-all"
+            >
+              取消交换
+            </button>
           </div>
         </div>
       )}
