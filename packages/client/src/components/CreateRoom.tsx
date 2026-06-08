@@ -13,7 +13,7 @@ const HYBRIDABLE_ROLES = ALL_ROLES.filter(role => canBeHybridRole(role));
 interface CustomConfig {
   maxPlayers: number;
   wolfCount: number;
-  enabledExtras: Set<Role>;   // 狼王 + 神职
+  enabledExtras: Set<Role>;   // 狼队特殊角色 + 神职
   hybridRoles: Set<Role>;
 }
 

@@ -199,7 +199,7 @@ export function Game() {
   const canSelfReveal = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WOLF_SELF_REVEAL)
     && (currentPhase === GamePhase.DAY_SPEAKING || currentPhase === GamePhase.DAY_VOTE);
   const canWhiteWolfKingExplode = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WHITE_WOLF_KING_EXPLODE)
-    && (currentPhase === GamePhase.DAY_SPEAKING || currentPhase === GamePhase.DAY_VOTE);
+    && currentPhase === GamePhase.DAY_VOTE;
 
   const selectTarget = (targetId: string, isSelected: boolean) => {
     if (isWolfPhase && isWolf) {

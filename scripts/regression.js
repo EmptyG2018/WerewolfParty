@@ -2,10 +2,15 @@ const { spawn } = require('node:child_process');
 const { io } = require('socket.io-client');
 require('tsx/cjs');
 const { GameEngine } = require('../packages/server/src/game/GameEngine.ts');
+const { WhiteWolfKingExplodeAction } = require('../packages/server/src/game/actions/WhiteWolfKingExplodeAction.ts');
+const { WolfSelfRevealAction } = require('../packages/server/src/game/actions/WolfSelfRevealAction.ts');
+const { ROLE_PRESETS, RoleAbility, roleHasAbility } = require('../packages/shared/roles.ts');
 
 const Role = {
+  VILLAGER: 'villager',
   WEREWOLF: 'werewolf',
   WOLF_KING: 'wolf_king',
+  WHITE_WOLF_KING: 'white_wolf_king',
   SEER: 'seer',
   WITCH: 'witch',
   HUNTER: 'hunter',
@@ -19,6 +24,8 @@ const GamePhase = {
   NIGHT_WITCH: 'night_witch',
   DAY_ANNOUNCE: 'day_announce',
   DAY_RESOLVING: 'day_resolving',
+  DAY_SPEAKING: 'day_speaking',
+  DAY_VOTE: 'day_vote',
   HUNTER_SHOOT: 'hunter_shoot',
   WOLF_KING_SHOOT: 'wolf_king_shoot'
 };
@@ -778,6 +785,73 @@ function testNightResolutionBranches() {
   };
 }
 
+function testWhiteWolfKingRules() {
+  const preset12 = ROLE_PRESETS.find(preset => preset.id === 'preset-12');
+  assert(preset12, 'missing 12-player preset');
+  assert(preset12.roles.includes(Role.WHITE_WOLF_KING), '12-player preset should include white wolf king');
+  assert(!preset12.roles.includes(Role.WOLF_KING), '12-player preset should not include wolf king');
+  assert(
+    roleHasAbility(Role.WHITE_WOLF_KING, RoleAbility.WOLF_SELF_REVEAL),
+    'white wolf king should be allowed to self reveal without taking a target'
+  );
+
+  const makeWhiteRoom = () => makeEngineRoom([
+    makeEnginePlayer('white', Role.WHITE_WOLF_KING),
+    makeEnginePlayer('target', Role.SEER),
+    makeEnginePlayer('villager', Role.VILLAGER)
+  ]);
+
+  const speakingExplodeRoom = makeWhiteRoom();
+  const speakingExplodeState = new GameEngine().createInitialGameState();
+  speakingExplodeState.phase = GamePhase.DAY_SPEAKING;
+  const speakingExplode = new WhiteWolfKingExplodeAction(new GameEngine()).execute(
+    speakingExplodeRoom,
+    speakingExplodeState,
+    speakingExplodeRoom.players[0],
+    speakingExplodeRoom.players[1].id
+  );
+
+  const selfRevealRoom = makeWhiteRoom();
+  const selfRevealState = new GameEngine().createInitialGameState();
+  selfRevealState.phase = GamePhase.DAY_SPEAKING;
+  const selfReveal = new WolfSelfRevealAction(new GameEngine()).execute(
+    selfRevealRoom,
+    selfRevealState,
+    selfRevealRoom.players[0]
+  );
+
+  const voteExplodeRoom = makeWhiteRoom();
+  const voteExplodeState = new GameEngine().createInitialGameState();
+  voteExplodeState.phase = GamePhase.DAY_VOTE;
+  const voteExplode = new WhiteWolfKingExplodeAction(new GameEngine()).execute(
+    voteExplodeRoom,
+    voteExplodeState,
+    voteExplodeRoom.players[0],
+    voteExplodeRoom.players[1].id
+  );
+
+  assert(!speakingExplode.ok, 'white wolf king should not take a target during speaking phase');
+  assert(selfReveal.ok, 'white wolf king should self reveal without taking a target during speaking phase');
+  assert(selfRevealRoom.players[0].status === 'dead', 'white wolf king self reveal should kill self');
+  assert(selfRevealRoom.players[1].status === 'alive', 'white wolf king self reveal should not kill target');
+  assert(selfRevealState.deadPlayers.length === 1 && selfRevealState.deadPlayers[0].reason === 'self_exposed', 'white wolf king self reveal should only record self_exposed');
+  assert(voteExplode.ok, 'white wolf king should take a target during vote phase');
+  assert(voteExplodeRoom.players[0].status === 'dead', 'white wolf king explode should kill self');
+  assert(voteExplodeRoom.players[1].status === 'dead', 'white wolf king explode should kill target');
+  assert(
+    voteExplodeState.deadPlayers.some(dead => dead.playerId === 'white' && dead.reason === 'self_exposed') &&
+      voteExplodeState.deadPlayers.some(dead => dead.playerId === 'target' && dead.reason === 'exploded'),
+    'white wolf king vote explode should record self_exposed and exploded deaths'
+  );
+
+  return {
+    presetUsesWhiteWolfKing: true,
+    speakingExplodeAllowed: speakingExplode.ok,
+    selfRevealDeaths: selfRevealState.deadPlayers.length,
+    voteExplodeDeaths: voteExplodeState.deadPlayers.length
+  };
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -791,6 +865,7 @@ async function main() {
     await waitForHealth(port);
     const results = [];
     results.push(['night resolution branches', testNightResolutionBranches()]);
+    results.push(['white wolf king rules', testWhiteWolfKingRules()]);
     results.push(['hunter hidden phase', await testHunterHiddenPhase(serverUrl)]);
     results.push(['wolf king hidden phase', await testWolfKingHiddenPhase(serverUrl)]);
     results.push(['public state isolation', await testPublicStateIsolation(serverUrl)]);

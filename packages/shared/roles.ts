@@ -168,10 +168,10 @@ export const ROLE_DEFINITIONS: Record<Role, RoleDefinition> = {
     id: Role.WHITE_WOLF_KING,
     name: '白狼王',
     icon: '♛',
-    description: '每晚参与狼人击杀，白天可以自曝并带走一名玩家',
-    skill: '自曝带人',
+    description: '每晚参与狼人击杀，白天可以自曝；投票阶段可以自曝并带走一名玩家',
+    skill: '自曝/自曝带人',
     canDisable: true,
-    abilities: [RoleAbility.WEREWOLF_KILL, RoleAbility.WHITE_WOLF_KING_EXPLODE]
+    abilities: [RoleAbility.WEREWOLF_KILL, RoleAbility.WOLF_SELF_REVEAL, RoleAbility.WHITE_WOLF_KING_EXPLODE]
   }),
   [Role.SEER]: new GodRoleDefinition({
     id: Role.SEER,
@@ -237,7 +237,7 @@ export const ROLE_PRESETS: RolePreset[] = [
     id: 'preset-12',
     name: '12人进阶局',
     playerCount: 12,
-    roles: [Role.WEREWOLF, Role.WOLF_KING, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
+    roles: [Role.WEREWOLF, Role.WHITE_WOLF_KING, Role.SEER, Role.WITCH, Role.HUNTER, Role.GUARD],
     wolfCount: 3,
     hybridRoles: []
   }

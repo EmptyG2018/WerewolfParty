@@ -18,12 +18,12 @@ export class WhiteWolfKingExplodeAction {
   constructor(private readonly engine: GameEngine) {}
 
   canExecute(gameState: GameState, player: Player): boolean {
-    // 白狼王自曝带人是白天技能，夜晚仍只作为狼人参与狼刀投票。
+    // 白狼王带人按标准板子限制在投票阶段；发言阶段只能普通自曝不带人。
     return (
       player.status === 'alive' &&
       player.role !== null &&
       roleHasAbility(player.role, RoleAbility.WHITE_WOLF_KING_EXPLODE) &&
-      (gameState.phase === GamePhase.DAY_SPEAKING || gameState.phase === GamePhase.DAY_VOTE)
+      gameState.phase === GamePhase.DAY_VOTE
     );
   }
 
