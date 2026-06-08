@@ -181,6 +181,11 @@ async function createStartedRoom(serverUrl, prefix, config = {}) {
     await once(clients[index].socket, 'room:joined');
   }
 
+  clients.forEach(client => client.socket.emit('room:ready', { ready: true }));
+  await waitForRoomState(clients, room => {
+    return room.players.length === room.config.maxPlayers && room.players.every(player => player.isReady);
+  });
+
   clients[0].socket.emit('room:start');
   await Promise.all(clients.map(client => once(client.socket, 'game:started')));
   return { roomId, clients };
@@ -213,6 +218,34 @@ function waitForPhase(clients, phase, timeout = 5000) {
     function cleanup() {
       clearTimeout(timer);
       handlers.forEach(({ socket, handler }) => socket.off('game:phaseChanged', handler));
+    }
+  });
+}
+
+function waitForRoomState(clients, predicate, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    const current = clients.find(client => client.room && predicate(client.room));
+    if (current) return resolve(current.room);
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Timeout waiting room state'));
+    }, timeout);
+
+    const handlers = clients.map(client => {
+      const handler = ({ room }) => {
+        if (predicate(room)) {
+          cleanup();
+          resolve(room);
+        }
+      };
+      client.socket.on('room:updated', handler);
+      return { socket: client.socket, handler };
+    });
+
+    function cleanup() {
+      clearTimeout(timer);
+      handlers.forEach(({ socket, handler }) => socket.off('room:updated', handler));
     }
   });
 }
@@ -472,17 +505,83 @@ async function testWolfFriendlyFireDisabled(serverUrl) {
 
     const nonWolfSelectionRecorded = wolf.wolfSelections.some(selections => selections[wolf.playerId] === nonWolf.playerId);
     const nonWolfVoteRecorded = wolf.wolfVotes.some(votes => votes[wolf.playerId] === nonWolf.playerId);
+    const selectionSyncedToWolfTeam = wolfTeammate.wolfSelections.some(selections => selections[wolf.playerId] === nonWolf.playerId);
+    const voteSyncedToWolfTeam = wolfTeammate.wolfVotes.some(votes => votes[wolf.playerId] === nonWolf.playerId);
+    const selectionLeakedToNonWolf = nonWolf.wolfSelections.some(selections => selections[wolf.playerId] === nonWolf.playerId);
+    const voteLeakedToNonWolf = nonWolf.wolfVotes.some(votes => votes[wolf.playerId] === nonWolf.playerId);
 
     assert(rejectedFriendlyTarget, 'wolf friendly target was not rejected when friendly fire disabled');
     assert(!friendlySelectionRecorded, 'rejected wolf friendly target was recorded as selection');
     assert(nonWolfSelectionRecorded, 'valid non-wolf target was not recorded as selection');
     assert(nonWolfVoteRecorded, 'valid non-wolf target was not confirmed as vote');
+    assert(selectionSyncedToWolfTeam, 'wolf selection was not synced to wolf teammate');
+    assert(voteSyncedToWolfTeam, 'wolf confirmed vote was not synced to wolf teammate');
+    assert(!selectionLeakedToNonWolf, 'wolf selection leaked to non-wolf player');
+    assert(!voteLeakedToNonWolf, 'wolf confirmed vote leaked to non-wolf player');
 
     return {
       roomId,
       wolf: wolf.name,
       rejectedTarget: wolfTeammate.name,
-      acceptedTarget: nonWolf.name
+      acceptedTarget: nonWolf.name,
+      selectionSyncedToWolfTeam,
+      voteSyncedToWolfTeam
+    };
+  } finally {
+    disconnectAll(clients);
+  }
+}
+
+async function testRoomReadyGate(serverUrl) {
+  const clients = Array.from({ length: 9 }, (_, index) => {
+    return makeClient(serverUrl, `ready-${index + 1}`);
+  });
+
+  try {
+    await Promise.all(clients.map(client => once(client.socket, 'connect')));
+    clients[0].socket.emit('room:create', {
+      playerName: clients[0].name,
+      config: {
+        roleConfirmTime: 1,
+        voteTime: 3
+      }
+    });
+    await once(clients[0].socket, 'room:joined');
+    const roomId = clients[0].room.id;
+
+    for (let index = 1; index < clients.length; index++) {
+      clients[index].socket.emit('room:join', { roomId, playerName: clients[index].name });
+      await once(clients[index].socket, 'room:joined');
+    }
+
+    clients.slice(0, -1).forEach(client => client.socket.emit('room:ready', { ready: true }));
+    await waitForRoomState(clients, room => {
+      return room.players.length === room.config.maxPlayers &&
+        room.players.filter(player => player.isReady).length === clients.length - 1;
+    });
+
+    clients[0].socket.emit('room:start');
+    await sleep(300);
+
+    const blockedWithoutAllReady = clients[0].errors.includes('所有玩家准备后才能开始游戏');
+    const startedTooEarly = clients.some(client => client.gameState !== null);
+
+    clients[clients.length - 1].socket.emit('room:ready', { ready: true });
+    await waitForRoomState(clients, room => {
+      return room.players.length === room.config.maxPlayers && room.players.every(player => player.isReady);
+    });
+
+    clients[0].socket.emit('room:start');
+    await Promise.all(clients.map(client => once(client.socket, 'game:started')));
+
+    assert(blockedWithoutAllReady, 'room start was not blocked when a player was unready');
+    assert(!startedTooEarly, 'room started before all players were ready');
+    assert(clients.every(client => client.gameState !== null), 'room did not start after all players became ready');
+
+    return {
+      roomId,
+      blockedWithoutAllReady,
+      startedPlayers: clients.filter(client => client.gameState !== null).length
     };
   } finally {
     disconnectAll(clients);
@@ -592,6 +691,7 @@ function makeEnginePlayer(id, role, status = 'alive') {
     status,
     online: true,
     isHost: false,
+    isReady: true,
     voteTarget: null,
     skillUsed: { witchSave: false, witchPoison: false, lastGuardTarget: null }
   };
@@ -694,6 +794,7 @@ async function main() {
     results.push(['hunter hidden phase', await testHunterHiddenPhase(serverUrl)]);
     results.push(['wolf king hidden phase', await testWolfKingHiddenPhase(serverUrl)]);
     results.push(['public state isolation', await testPublicStateIsolation(serverUrl)]);
+    results.push(['room ready gate', await testRoomReadyGate(serverUrl)]);
     results.push(['wolf friendly fire disabled', await testWolfFriendlyFireDisabled(serverUrl)]);
     results.push(['same guard and save kills target', await testSameGuardAndSaveKillsTarget(serverUrl)]);
 

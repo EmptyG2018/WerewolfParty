@@ -65,6 +65,10 @@ io.on('connection', (socket) => {
     roomManager.updateConfig(socket, data);
   });
 
+  socket.on('room:ready', (data) => {
+    roomManager.setReady(socket, data.ready);
+  });
+
   socket.on('room:swapSeat', (data) => {
     roomManager.swapSeat(socket, data.targetSeat);
   });

@@ -130,6 +130,7 @@ interface GameStore {
   createRoom: (playerName: string, config?: Partial<import('@werewolf/shared').RoomConfig>) => void;
   joinRoom: (roomId: string, playerName: string) => void;
   leaveRoom: () => void;
+  setReady: (ready: boolean) => void;
   startGame: () => void;
   resetRoom: () => void;
 
@@ -566,6 +567,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   startGame: () => {
     socket.emit('room:start');
+  },
+
+  setReady: (ready) => {
+    socket.emit('room:ready', { ready });
   },
 
   resetRoom: () => {

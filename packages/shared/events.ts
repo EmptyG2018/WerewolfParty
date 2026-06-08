@@ -8,6 +8,7 @@ export interface ClientToServerEvents {
   'room:reconnect': (data: { sessionId: string }) => void;
   'room:leave': () => void;
   'room:updateConfig': (data: Partial<RoomConfig>) => void;
+  'room:ready': (data: { ready: boolean }) => void;
   'room:start': () => void;
   'room:reset': () => void;
   'room:swapSeat': (data: { targetSeat: number }) => void;

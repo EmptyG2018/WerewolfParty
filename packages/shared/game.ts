@@ -33,6 +33,7 @@ export interface Player {
   status: 'alive' | 'dead';
   online: boolean;
   isHost: boolean;
+  isReady: boolean;
   voteTarget: string | null;
   skillUsed: {
     witchSave: boolean;

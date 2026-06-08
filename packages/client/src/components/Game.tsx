@@ -201,23 +201,31 @@ export function Game() {
   const canWhiteWolfKingExplode = !isPaused && isAlive && roleHasAbility(myRole, RoleAbility.WHITE_WOLF_KING_EXPLODE)
     && (currentPhase === GamePhase.DAY_SPEAKING || currentPhase === GamePhase.DAY_VOTE);
 
+  const selectTarget = (targetId: string, isSelected: boolean) => {
+    if (isWolfPhase && isWolf) {
+      if (hasConfirmedWolfVote) return;
+      setSelectedTarget(targetId);
+      if (myWolfSelection !== targetId) {
+        werewolfKill(targetId);
+      }
+      return;
+    }
+
+    setSelectedTarget(isSelected ? null : targetId);
+  };
+
   const handleAction = () => {
     if (!selectedTarget) return;
     const targetName = getPlayerName(selectedTarget);
     switch (currentPhase) {
       case GamePhase.NIGHT_WEREWOLF:
         if (roleHasAbility(myRole, RoleAbility.WEREWOLF_KILL)) {
-          if (myWolfSelection === selectedTarget) {
-            confirmThen({
-              title: '确认狼刀',
-              message: `确认投票击杀 ${targetName}？确认后本轮不能修改。`,
-              confirmLabel: '确认击杀',
-              tone: 'danger'
-            }, wolfConfirmVote);
-          } else {
-            // 新选择
-            werewolfKill(selectedTarget);
-          }
+          confirmThen({
+            title: '确认狼刀',
+            message: `确认将 ${targetName} 作为你的最终刀票？确认后本轮不能修改。`,
+            confirmLabel: '确认刀杀',
+            tone: 'danger'
+          }, wolfConfirmVote);
         }
         return;
       case GamePhase.NIGHT_SEER:
@@ -635,15 +643,21 @@ export function Game() {
               const hasPlayerSpoken = speaking?.confirmed.includes(player.id) ?? false;
               const latestDeath = getLatestDeath(player.id);
 
-              // 狼人投票：显示已确认投票数
+              const wolfPendingSelectionsOnThis = isWolf && isWolfPhase
+                ? Object.entries(wolfSelections)
+                  .filter(([wolfId, tid]) => tid === player.id && !Object.prototype.hasOwnProperty.call(wolfVotes, wolfId))
+                  .map(([wolfId]) => wolfId)
+                : [];
               const wolfVotesOnThis = isWolf && isWolfPhase
-                ? Object.entries(wolfVotes).filter(([, tid]) => tid === player.id).length
-                : 0;
+                ? Object.entries(wolfVotes).filter(([, tid]) => tid === player.id).map(([wolfId]) => wolfId)
+                : [];
+              const myPendingSelectionOnThis = myId ? wolfPendingSelectionsOnThis.includes(myId) : false;
+              const myConfirmedVoteOnThis = myId ? wolfVotesOnThis.includes(myId) : false;
 
               return (
                 <button
                   key={player.id}
-                  onClick={() => isTargetable && setSelectedTarget(isSelected ? null : player.id)}
+                  onClick={() => isTargetable && selectTarget(player.id, isSelected)}
                   disabled={!isTargetable}
                   className={`animate-slide-up relative flex items-center gap-3 p-3 rounded-xl transition-all duration-200 text-left ${
                     isDead
@@ -659,10 +673,10 @@ export function Game() {
                       : 'glass active:scale-[0.97]'
                   }`}
                 >
-                  {/* Wolf vote badge */}
-                  {wolfVotesOnThis > 0 && (
+                  {/* Wolf confirmed vote badge */}
+                  {wolfVotesOnThis.length > 0 && (
                     <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-blood flex items-center justify-center">
-                      <span className="text-[9px] text-white font-bold">{wolfVotesOnThis}</span>
+                      <span className="text-[9px] text-white font-bold">{wolfVotesOnThis.length}</span>
                     </div>
                   )}
 
@@ -716,6 +730,28 @@ export function Game() {
                         ? ROLES[myRole].name
                         : ''}
                     </div>
+                    {isWolf && isWolfPhase && (wolfPendingSelectionsOnThis.length > 0 || wolfVotesOnThis.length > 0) && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {wolfPendingSelectionsOnThis.length > 0 && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${
+                            myPendingSelectionOnThis
+                              ? 'bg-gold/20 text-gold'
+                              : 'bg-white/[0.06] text-moon-mist'
+                          }`}>
+                            {myPendingSelectionOnThis ? '我已选' : '狼队选择'}×{wolfPendingSelectionsOnThis.length}
+                          </span>
+                        )}
+                        {wolfVotesOnThis.length > 0 && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${
+                            myConfirmedVoteOnThis
+                              ? 'bg-heal/20 text-heal-400'
+                              : 'bg-blood/15 text-blood-400'
+                          }`}>
+                            {myConfirmedVoteOnThis ? '我已确认' : '已确认'}×{wolfVotesOnThis.length}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* 选择指示器 */}
@@ -971,15 +1007,19 @@ export function Game() {
                 <>
                   {hasConfirmedWolfVote ? (
                     <div className="flex-1 py-3.5 rounded-xl font-display text-base text-heal-400 text-center glass">
-                      已确认投票 → {room.players.find(p => p.id === myWolfVote)?.name}
+                      已确认刀票 → {room.players.find(p => p.id === myWolfVote)?.name}
                     </div>
                   ) : (
                     <button
                       onClick={handleAction}
-                      disabled={isPaused || !selectedTarget}
+                      disabled={isPaused || !selectedTarget || myWolfSelection !== selectedTarget}
                       className={`flex-1 py-3.5 rounded-xl font-display text-base tracking-wide text-white transition-all duration-200 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r ${getActionColor()}`}
                     >
-                      {myWolfSelection === selectedTarget ? '确认投票' : '选择'} {selectedTarget ? room.players.find(p => p.id === selectedTarget)?.name : ''}
+                      {selectedTarget
+                        ? myWolfSelection === selectedTarget
+                          ? `确认刀杀 ${room.players.find(p => p.id === selectedTarget)?.name}`
+                          : '同步选择中'
+                        : '选择刀杀目标'}
                     </button>
                   )}
                 </>

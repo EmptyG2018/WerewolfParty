@@ -79,6 +79,7 @@ export class RoomManager {
         status: 'alive',
         online: true,
         isHost: false,
+        isReady: true,
         voteTarget: null,
         skillUsed: { witchSave: false, witchPoison: false, lastGuardTarget: null }
       };
@@ -134,6 +135,7 @@ export class RoomManager {
       status: 'alive',
       online: true,
       isHost: true,
+      isReady: false,
       voteTarget: null,
       skillUsed: { witchSave: false, witchPoison: false, lastGuardTarget: null }
     };
@@ -193,6 +195,7 @@ export class RoomManager {
       status: 'alive',
       online: true,
       isHost: false,
+      isReady: false,
       voteTarget: null,
       skillUsed: { witchSave: false, witchPoison: false, lastGuardTarget: null }
     };
@@ -292,7 +295,25 @@ export class RoomManager {
     }
 
     room.config = { ...room.config, ...config };
+    room.players.forEach(roomPlayer => {
+      roomPlayer.isReady = false;
+    });
     this.broadcastRoomUpdate(roomId);
+  }
+
+  setReady(socket: TypedSocket, ready: boolean): void {
+    const room = this.getRoomBySocket(socket);
+    if (!room) return;
+    const player = this.getPlayerBySocket(socket);
+    if (!player) return;
+
+    if (room.status !== 'waiting') {
+      socket.emit('room:error', { message: '游戏已开始，无法修改准备状态' });
+      return;
+    }
+
+    player.isReady = ready;
+    this.broadcastRoomUpdate(room.id);
   }
 
   resetRoom(socket: TypedSocket): boolean {
@@ -313,6 +334,7 @@ export class RoomManager {
     room.players.forEach(roomPlayer => {
       roomPlayer.role = null;
       roomPlayer.status = 'alive';
+      roomPlayer.isReady = false;
       roomPlayer.voteTarget = null;
       roomPlayer.skillUsed = { witchSave: false, witchPoison: false, lastGuardTarget: null };
     });
