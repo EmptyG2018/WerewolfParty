@@ -9,6 +9,7 @@ export enum GamePhase {
   NIGHT_WITCH = 'night_witch',
   NIGHT_GUARD = 'night_guard',
   DAY_ANNOUNCE = 'day_announce',
+  DAY_RESOLVING = 'day_resolving',
   DAY_SPEAKING = 'day_speaking',
   // 被白天投票放逐的玩家遗言阶段；技能击杀当前实现不进入遗言。
   DAY_VOTE = 'day_vote',
@@ -40,6 +41,10 @@ export interface Player {
   };
 }
 
+export type PublicPlayer = Omit<Player, 'role'> & {
+  role: null;
+};
+
 /** 座位交换请求 */
 export interface SeatSwapRequest {
   fromId: string;              // 发起者 socketId
@@ -64,6 +69,13 @@ export interface DeadPlayer {
 }
 
 export type DeathReason = 'killed' | 'voted' | 'poisoned' | 'shot' | 'self_exposed' | 'exploded';
+export type PublicDeathReason = 'night' | 'voted' | 'shot' | 'self_exposed' | 'exploded';
+
+export interface PublicDeadPlayer {
+  playerId: string;
+  reason: PublicDeathReason;
+  day: number;
+}
 
 export interface SystemMessage {
   id: string;
@@ -113,3 +125,18 @@ export interface GameState {
   wolfKingCanShoot: boolean;
   wolfVotes: Record<string, string>;  // wolfId → targetId (狼人投票)
 }
+
+export type PublicGameState = Omit<
+  GameState,
+  | 'deadPlayers'
+  | 'nightActions'
+  | 'seerCheckResult'
+  | 'witchSaveUsed'
+  | 'witchPoisonUsed'
+  | 'lastKilledPlayer'
+  | 'lastGuardTarget'
+  | 'wolfKingCanShoot'
+  | 'wolfVotes'
+> & {
+  deadPlayers: PublicDeadPlayer[];
+};

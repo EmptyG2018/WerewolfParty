@@ -21,7 +21,7 @@ export function DebugPanel() {
   const [busy, setBusy] = useState(false);
   const [viewingPlayer, setViewingPlayer] = useState<DebugPerspective | null>(null);
 
-  if (!import.meta.env.DEV || !room) return null;
+  if (import.meta.env.VITE_ENABLE_DEBUG_TOOLS !== 'true' || !room) return null;
 
   const callDebug = async (path: string) => {
     setBusy(true);

@@ -68,18 +68,24 @@ export class GameEngine {
     nightActions: Map<NightActionKey, { targetId: string }>,
     witchSavedThisNight = false
   ): NightResolution {
-    // 夜晚结算顺序：狼刀先被守卫/女巫解药抵消，再合并毒药死亡，避免重复死亡记录。
-    let killedPlayerId = nightActions.get('wolfKill')?.targetId ?? null;
+    // 夜晚结算顺序：狼刀先处理守护/解药，再合并毒药死亡，避免重复死亡记录。
+    const wolfKillTargetId = nightActions.get('wolfKill')?.targetId ?? null;
+    let killedPlayerId = wolfKillTargetId;
     const poisonedPlayerId = nightActions.get('witchPoison')?.targetId ?? null;
 
-    // 守卫保护
+    // 同守同救：守卫和女巫解药同时作用于当晚狼刀目标时，狼刀不被抵消。
     const guardAction = nightActions.get('guardProtect');
-    if (guardAction && guardAction.targetId === killedPlayerId) {
+    const guardProtectedWolfKill = Boolean(wolfKillTargetId && guardAction?.targetId === wolfKillTargetId);
+    const witchSavedWolfKill = Boolean(wolfKillTargetId && witchSavedThisNight);
+    const sameGuardAndSave = guardProtectedWolfKill && witchSavedWolfKill;
+
+    // 守卫单守狼刀目标时抵消狼刀。
+    if (guardProtectedWolfKill && !sameGuardAndSave) {
       killedPlayerId = null;
     }
 
-    // 女巫解药
-    if (witchSavedThisNight && killedPlayerId) {
+    // 女巫单救狼刀目标时抵消狼刀。
+    if (witchSavedWolfKill && !sameGuardAndSave) {
       killedPlayerId = null;
     }
 

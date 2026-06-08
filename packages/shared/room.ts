@@ -1,5 +1,5 @@
 import { Role, RoleGroup, canBeHybridRole, getRoleGroups, hasRoleGroup } from './roles';
-import { Player } from './game';
+import { Player, PublicPlayer } from './game';
 
 export interface RoomConfig {
   maxPlayers: number;
@@ -8,6 +8,7 @@ export interface RoomConfig {
   voteTime: number;
   roleConfirmTime: number;     // 确认身份倒计时（秒）
   allowWitchSelfSave: boolean; // 是否允许女巫自救
+  allowWolfFriendlyFire: boolean; // 是否允许狼人自刀或刀狼队友
   hybridRoles: Role[];
 }
 
@@ -20,6 +21,10 @@ export interface Room {
   createdAt: number;
 }
 
+export type PublicRoom = Omit<Room, 'players'> & {
+  players: PublicPlayer[];
+};
+
 export const DEFAULT_ROOM_CONFIG: RoomConfig = {
   maxPlayers: 9,
   roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER],
@@ -27,6 +32,7 @@ export const DEFAULT_ROOM_CONFIG: RoomConfig = {
   voteTime: 60,
   roleConfirmTime: 30,
   allowWitchSelfSave: false,
+  allowWolfFriendlyFire: true,
   hybridRoles: []
 };
 

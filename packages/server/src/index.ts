@@ -27,7 +27,7 @@ const gameManager = new GameManager(roomManager, io);
 // 房间删除时清理游戏状态
 roomManager.setOnRoomDeleted((roomId) => gameManager.cleanup(roomId));
 
-if (process.env.NODE_ENV === 'development' || process.env.ENABLE_DEBUG_TOOLS === 'true') {
+if (process.env.ENABLE_DEBUG_TOOLS === 'true') {
   registerDebugRoutes(app, roomManager, gameManager);
 }
 

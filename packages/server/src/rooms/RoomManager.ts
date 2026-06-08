@@ -1,5 +1,5 @@
 import { Socket, Server } from 'socket.io';
-import { Room, Player, RoomConfig, SeatSwapRequest, DEFAULT_ROOM_CONFIG, validateConfig, ClientToServerEvents, ServerToClientEvents } from '@werewolf/shared';
+import { Room, Player, PublicRoom, PublicPlayer, RoomConfig, SeatSwapRequest, DEFAULT_ROOM_CONFIG, validateConfig, ClientToServerEvents, ServerToClientEvents } from '@werewolf/shared';
 import { generateRoomId, generateSessionId } from '../utils';
 
 type TypedSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
@@ -38,6 +38,23 @@ export class RoomManager {
       }));
   }
 
+  private getPublicRoom(room: Room): PublicRoom {
+    return {
+      ...room,
+      players: room.players.map(player => ({
+        ...player,
+        role: null
+      }))
+    };
+  }
+
+  private getPublicPlayer(player: Player): PublicPlayer {
+    return {
+      ...player,
+      role: null
+    };
+  }
+
   addDebugPlayers(roomId: string, count: number): Player[] {
     const room = this.rooms.get(roomId);
     if (!room || room.status !== 'waiting') return [];
@@ -69,7 +86,7 @@ export class RoomManager {
       room.players.push(player);
       this.sessionRooms.set(sessionId, roomId);
       created.push(player);
-      this.io?.to(roomId).emit('room:playerJoined', { player });
+      this.io?.to(roomId).emit('room:playerJoined', { player: this.getPublicPlayer(player) });
     }
 
     if (created.length > 0) {
@@ -138,7 +155,7 @@ export class RoomManager {
     socket.join(roomId);
     socket.join(sessionId);
     socket.emit('room:created', { roomId });
-    socket.emit('room:joined', { room, sessionId, playerId: sessionId });
+    socket.emit('room:joined', { room: this.getPublicRoom(room), sessionId, playerId: sessionId });
   }
 
   joinRoom(socket: TypedSocket, roomId: string, playerName: string): void {
@@ -187,8 +204,8 @@ export class RoomManager {
 
     socket.join(roomId);
     socket.join(sessionId);
-    socket.emit('room:joined', { room, sessionId, playerId: sessionId });
-    socket.to(roomId).emit('room:playerJoined', { player });
+    socket.emit('room:joined', { room: this.getPublicRoom(room), sessionId, playerId: sessionId });
+    socket.to(roomId).emit('room:playerJoined', { player: this.getPublicPlayer(player) });
     this.broadcastRoomUpdate(roomId);
   }
 
@@ -213,7 +230,7 @@ export class RoomManager {
     this.socketPlayers.set(socket.id, player.id);
     socket.join(roomId);
     socket.join(player.id);
-    socket.emit('room:reconnected', { room, sessionId, playerId: player.id });
+    socket.emit('room:reconnected', { room: this.getPublicRoom(room), sessionId, playerId: player.id });
     this.broadcastRoomUpdate(roomId);
     return room;
   }
@@ -498,7 +515,7 @@ export class RoomManager {
   private broadcastRoomUpdate(roomId: string): void {
     const room = this.rooms.get(roomId);
     if (room && this.io) {
-      this.io.to(roomId).emit('room:updated', { room });
+      this.io.to(roomId).emit('room:updated', { room: this.getPublicRoom(room) });
     }
   }
 }

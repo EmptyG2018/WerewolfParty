@@ -52,7 +52,7 @@ export class DebugBotManager {
         bots
           .filter(bot => bot.status === 'alive' && bot.role && roleHasAbility(bot.role, RoleAbility.WEREWOLF_KILL))
           .forEach(bot => {
-            const target = this.pickWolfTarget(room.players, bot, room.config.hybridRoles);
+            const target = this.pickWolfTarget(room.players, bot, room.config.hybridRoles, room.config.allowWolfFriendlyFire);
             if (!target) return;
             const selected = this.gameManager.werewolfKillByPlayer(roomId, bot.id, target.id);
             const confirmed = selected && this.gameManager.wolfConfirmVoteByPlayer(roomId, bot.id);
@@ -162,10 +162,11 @@ export class DebugBotManager {
     return players.find(player => player.status === 'alive' && player.id !== actor.id) ?? null;
   }
 
-  private pickWolfTarget(players: Player[], actor: Player, hybridRoles: Role[]): Player | null {
+  private pickWolfTarget(players: Player[], actor: Player, hybridRoles: Role[], allowWolfFriendlyFire: boolean): Player | null {
     const nonWolfTarget = players.find(player => {
       return player.status === 'alive' && player.id !== actor.id && !(player.role && isWolfRole(player.role, hybridRoles));
     });
+    if (!allowWolfFriendlyFire) return nonWolfTarget ?? null;
     return nonWolfTarget ?? this.pickAliveOther(players, actor);
   }
 }

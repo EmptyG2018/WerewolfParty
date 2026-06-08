@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { Role, ROLES, Player, getCampCounts, getRoleCounts, isWolfRole } from '@werewolf/shared';
+import { Role, ROLES, PublicPlayer, getCampCounts, getRoleCounts, isWolfRole } from '@werewolf/shared';
 
 export function Room() {
   const {
@@ -26,14 +26,14 @@ export function Room() {
   const { wolves, gods, villagers } = getCampCounts(room.config);
   const roleCounts = getRoleCounts(room.config);
   const wolfExtraRoles = room.config.roles.filter(role => isWolfRole(role) && role !== Role.WEREWOLF);
-  const getSeatNumber = (player: Player) => player.seatIndex + 1;
+  const getSeatNumber = (player: PublicPlayer) => player.seatIndex + 1;
   const getPlayerName = (playerId: string | null) => {
     if (!playerId) return '空座位';
     return room.players.find(player => player.id === playerId)?.name ?? '未知玩家';
   };
 
   // 构建座位表：按座位号排列，null 表示空座
-  const seats: (Player | null)[] = Array.from({ length: room.config.maxPlayers }, () => null);
+  const seats: (PublicPlayer | null)[] = Array.from({ length: room.config.maxPlayers }, () => null);
   room.players.forEach(p => { seats[p.seatIndex] = p; });
 
   const myPlayer = room.players.find(p => p.id === myId);
@@ -203,18 +203,26 @@ export function Room() {
               ))}
             </div>
           </div>
-          <div className="mt-2 bg-forest-50/50 rounded-xl p-3 flex items-center justify-between gap-3">
+          <div className="mt-2 bg-forest-50/50 rounded-xl p-3">
             <div>
               <div className="text-moon-mist text-[10px] tracking-wider mb-1">规则选项</div>
-              <div className="text-xs text-moon-dim">女巫自救</div>
+              <div className="flex flex-wrap gap-1.5">
+                <span className={`text-xs px-2 py-1 rounded-lg ${
+                  room.config.allowWitchSelfSave
+                    ? 'bg-poison/15 text-poison'
+                    : 'bg-white/[0.05] text-moon-mist'
+                }`}>
+                  女巫自救 {room.config.allowWitchSelfSave ? '允许' : '禁止'}
+                </span>
+                <span className={`text-xs px-2 py-1 rounded-lg ${
+                  room.config.allowWolfFriendlyFire
+                    ? 'bg-blood/15 text-blood-400'
+                    : 'bg-white/[0.05] text-moon-mist'
+                }`}>
+                  狼人自刀/队友 {room.config.allowWolfFriendlyFire ? '允许' : '禁止'}
+                </span>
+              </div>
             </div>
-            <span className={`text-xs px-2 py-1 rounded-lg ${
-              room.config.allowWitchSelfSave
-                ? 'bg-poison/15 text-poison'
-                : 'bg-white/[0.05] text-moon-mist'
-            }`}>
-              {room.config.allowWitchSelfSave ? '允许' : '禁止'}
-            </span>
           </div>
         </div>
       </div>

@@ -17,7 +17,7 @@ interface CustomConfig {
   hybridRoles: Set<Role>;
 }
 
-function toRoomConfig(custom: CustomConfig, allowWitchSelfSave: boolean): RoomConfig {
+function toRoomConfig(custom: CustomConfig, allowWitchSelfSave: boolean, allowWolfFriendlyFire: boolean): RoomConfig {
   const roles: Role[] = [Role.WEREWOLF, ...custom.enabledExtras];
   return {
     maxPlayers: custom.maxPlayers,
@@ -26,6 +26,7 @@ function toRoomConfig(custom: CustomConfig, allowWitchSelfSave: boolean): RoomCo
     voteTime: DEFAULT_ROOM_CONFIG.voteTime,
     roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime,
     allowWitchSelfSave,
+    allowWolfFriendlyFire,
     hybridRoles: [...custom.hybridRoles]
   };
 }
@@ -35,6 +36,7 @@ export function CreateRoom() {
   const [mode, setMode] = useState<'preset' | 'custom'>('preset');
   const [selectedPreset, setSelectedPreset] = useState<string>(ROLE_PRESETS[0].id);
   const [allowWitchSelfSave, setAllowWitchSelfSave] = useState(DEFAULT_ROOM_CONFIG.allowWitchSelfSave);
+  const [allowWolfFriendlyFire, setAllowWolfFriendlyFire] = useState(DEFAULT_ROOM_CONFIG.allowWolfFriendlyFire);
 
   const [custom, setCustom] = useState<CustomConfig>({
     maxPlayers: 9,
@@ -54,10 +56,11 @@ export function CreateRoom() {
         voteTime: DEFAULT_ROOM_CONFIG.voteTime,
         roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime,
         allowWitchSelfSave,
+        allowWolfFriendlyFire,
         hybridRoles: p.hybridRoles
       };
     })()
-    : toRoomConfig(custom, allowWitchSelfSave);
+    : toRoomConfig(custom, allowWitchSelfSave, allowWolfFriendlyFire);
   const currentCounts = calcCampCounts(currentConfig);
   const enabledWolfExtras = [...custom.enabledExtras].filter(role => isWolfRole(role)).length;
 
@@ -149,6 +152,7 @@ export function CreateRoom() {
                         voteTime: DEFAULT_ROOM_CONFIG.voteTime,
                         roleConfirmTime: DEFAULT_ROOM_CONFIG.roleConfirmTime,
                         allowWitchSelfSave,
+                        allowWolfFriendlyFire,
                         hybridRoles: preset.hybridRoles
                       }).wolves}狼
                     </div>
@@ -368,6 +372,23 @@ export function CreateRoom() {
             </div>
             <div className={`w-11 h-6 rounded-full p-0.5 transition-colors ${allowWitchSelfSave ? 'bg-poison' : 'bg-forest-50'}`}>
               <div className={`w-5 h-5 rounded-full bg-white transition-transform ${allowWitchSelfSave ? 'translate-x-5' : 'translate-x-0'}`} />
+            </div>
+          </button>
+          <button
+            onClick={() => setAllowWolfFriendlyFire(prev => !prev)}
+            className="mt-2 w-full glass rounded-2xl p-4 flex items-center gap-3 text-left active:scale-[0.99] transition-transform"
+          >
+            <div className="w-10 h-10 rounded-xl bg-blood/10 flex items-center justify-center text-lg">
+              {ROLES[Role.WEREWOLF].icon}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-moon">允许狼人自刀/刀队友</div>
+              <div className="text-[10px] text-moon-mist mt-0.5">
+                默认开启；关闭后狼人只能选择存活非狼人
+              </div>
+            </div>
+            <div className={`w-11 h-6 rounded-full p-0.5 transition-colors ${allowWolfFriendlyFire ? 'bg-blood' : 'bg-forest-50'}`}>
+              <div className={`w-5 h-5 rounded-full bg-white transition-transform ${allowWolfFriendlyFire ? 'translate-x-5' : 'translate-x-0'}`} />
             </div>
           </button>
         </div>

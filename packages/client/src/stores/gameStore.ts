@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Room, GameState, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage, DeathReason } from '@werewolf/shared';
+import { Player, PublicGameState, PublicRoom, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage, PublicDeathReason } from '@werewolf/shared';
 import { socket } from '../lib/socket';
 
 type View = 'home' | 'create' | 'room' | 'game';
@@ -7,9 +7,42 @@ const SESSION_STORAGE_KEY = 'werewolf.sessionId';
 // React 严格模式下组件可能重复挂载，用模块级标记避免重复注册 socket 监听。
 let socketInitialized = false;
 
+const getPhaseScopedState = (
+  phase: GamePhase,
+  speaking: SpeakingState | undefined,
+  resetWolfState: boolean
+): Partial<GameStore> => {
+  const scoped: Partial<GameStore> = {};
+
+  scoped.speaking = speaking ?? null;
+  if (resetWolfState) {
+    scoped.wolfVotes = {};
+    scoped.wolfSelections = {};
+  }
+  if (phase === GamePhase.NIGHT_WEREWOLF) {
+    scoped.voteResult = null;
+    scoped.witchInfo = null;
+  }
+  if (phase === GamePhase.NIGHT_SEER) {
+    scoped.seerResult = null;
+  }
+  if (phase !== GamePhase.NIGHT_WITCH) {
+    scoped.witchInfo = null;
+  }
+  if (phase === GamePhase.DAY_VOTE) {
+    scoped.voteResult = null;
+  }
+  if (phase !== GamePhase.ROLE_CONFIRM) {
+    scoped.roleConfirmed = false;
+    scoped.confirmedPlayers = [];
+  }
+
+  return scoped;
+};
+
 export interface DeathEvent {
   playerId: string;
-  reason: DeathReason;
+  reason: PublicDeathReason;
   day: number;
 }
 
@@ -19,14 +52,25 @@ export interface VoteResultState {
   abstained: number;
 }
 
+export interface SeerResultState {
+  playerId: string;
+  isWerewolf: boolean;
+  day: number;
+}
+
+export interface SkillState {
+  witch?: { saveAvailable: boolean; poisonAvailable: boolean };
+  guard?: { lastGuardTargetId: string | null };
+}
+
 interface GameStore {
   // 视图状态
   currentView: View;
   setCurrentView: (view: View) => void;
 
   // 房间状态
-  room: Room | null;
-  setRoom: (room: Room | null) => void;
+  room: PublicRoom | null;
+  setRoom: (room: PublicRoom | null) => void;
 
   // 待创建房间的玩家名
   pendingName: string | null;
@@ -39,8 +83,8 @@ interface GameStore {
   setMyRole: (role: Role | null) => void;
 
   // 游戏状态
-  gameState: GameState | null;
-  setGameState: (state: GameState | null) => void;
+  gameState: PublicGameState | null;
+  setGameState: (state: PublicGameState | null) => void;
 
   // 系统消息
   systemMessages: SystemMessage[];
@@ -51,9 +95,10 @@ interface GameStore {
   setSpeaking: (state: SpeakingState | null) => void;
 
   // 游戏结果
-  seerResult: { playerId: string; isWerewolf: boolean } | null;
-  setSeerResult: (result: { playerId: string; isWerewolf: boolean } | null) => void;
+  seerResult: SeerResultState | null;
+  setSeerResult: (result: SeerResultState | null) => void;
   witchInfo: { killedPlayerId: string | null } | null;
+  skillState: SkillState | null;
 
   // 错误信息
   error: string | null;
@@ -76,6 +121,7 @@ interface GameStore {
 
   deathEvents: DeathEvent[];
   voteResult: VoteResultState | null;
+  revealedPlayers: Player[] | null;
 
   // 初始化socket监听
   initSocket: () => void;
@@ -129,6 +175,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   speaking: null,
   seerResult: null,
   witchInfo: null,
+  skillState: null,
   error: null,
   pendingSwapRequest: null,
   outgoingSwapRequest: null,
@@ -139,6 +186,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   wolfTeam: [],
   deathEvents: [],
   voteResult: null,
+  revealedPlayers: null,
 
   setCurrentView: (view) => set({ currentView: view }),
   setPendingName: (name) => set({ pendingName: name }),
@@ -204,6 +252,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         nextState.speaking = null;
         nextState.seerResult = null;
         nextState.witchInfo = null;
+        nextState.skillState = null;
         nextState.roleConfirmed = false;
         nextState.confirmedPlayers = [];
         nextState.wolfVotes = {};
@@ -211,6 +260,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         nextState.wolfTeam = [];
         nextState.deathEvents = [];
         nextState.voteResult = null;
+        nextState.revealedPlayers = null;
       }
       set(nextState);
     });
@@ -260,8 +310,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
         myRole,
         currentView: 'game',
         systemMessages: [],
-        speaking: null,
+        speaking: gameState.speaking ?? null,
         witchInfo: null,
+        skillState: null,
         roleConfirmed: false,
         confirmedPlayers: [],
         wolfVotes: {},
@@ -272,7 +323,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
           reason: dead.reason,
           day: dead.day
         })),
-        voteResult: null
+        voteResult: null,
+        revealedPlayers: null
       });
     });
 
@@ -281,7 +333,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       if (gameState) {
         // 服务端下发 endsAt，客户端按当前时间换算剩余秒数，保证多端显示一致。
         const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
-        const update: Partial<GameState> = {
+        const update: Partial<PublicGameState> = {
           phase,
           phaseTimer,
           phaseEndsAt: endsAt,
@@ -291,29 +343,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
         };
         if (speaking !== undefined) {
           update.speaking = speaking;
-          set({ speaking });
         } else {
           update.speaking = null;
-          set({ speaking: null });
         }
         if (phase === GamePhase.DAY_VOTE) {
           update.votes = {};
         }
-        set({ gameState: { ...gameState, ...update } });
-        // 新阶段重置狼人投票和确认状态
-        if (phase === GamePhase.NIGHT_WEREWOLF) {
-          // 新一晚重新开始狼队选择/确认，上一晚的投票结果不能沿用。
-          set({ wolfVotes: {}, wolfSelections: {}, voteResult: null, witchInfo: null });
-        }
-        if (phase !== GamePhase.NIGHT_WITCH) {
-          set({ witchInfo: null });
-        }
-        if (phase === GamePhase.DAY_VOTE) {
-          set({ voteResult: null });
-        }
-        if (phase !== GamePhase.ROLE_CONFIRM) {
-          set({ roleConfirmed: false, confirmedPlayers: [] });
-        }
+        set({
+          ...getPhaseScopedState(phase, speaking, phase === GamePhase.NIGHT_WEREWOLF),
+          gameState: { ...gameState, ...update }
+        });
       }
     });
 
@@ -337,7 +376,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const gameState = get().gameState;
       if (gameState) {
         const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
-        const update: Partial<GameState> = {
+        const update: Partial<PublicGameState> = {
           phase,
           phaseTimer,
           phaseEndsAt: endsAt,
@@ -347,9 +386,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
         };
         if (speaking !== undefined) {
           update.speaking = speaking;
-          set({ speaking });
+        } else {
+          update.speaking = null;
         }
-        set({ gameState: { ...gameState, ...update } });
+        set({
+          ...getPhaseScopedState(phase, speaking, false),
+          gameState: { ...gameState, ...update }
+        });
       }
     });
 
@@ -380,12 +423,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     });
 
-    socket.on('game:seerResult', ({ playerId, isWerewolf }) => {
-      set({ seerResult: { playerId, isWerewolf } });
+    socket.on('game:seerResult', ({ playerId, isWerewolf, day }) => {
+      set({ seerResult: { playerId, isWerewolf, day } });
     });
 
     socket.on('game:witchInfo', ({ killedPlayerId }) => {
       set({ witchInfo: { killedPlayerId } });
+    });
+
+    socket.on('game:skillState', (skillState) => {
+      set({ skillState });
     });
 
     socket.on('game:systemMessage', (message) => {
@@ -423,10 +470,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       if (gameState) {
         set({ gameState: { ...gameState, winner, phase: GamePhase.GAME_OVER } });
       }
-      const room = get().room;
-      if (room) {
-        set({ room: { ...room, players } });
-      }
+      set({ revealedPlayers: players });
     });
 
     socket.on('game:error', ({ message }) => {
@@ -434,19 +478,45 @@ export const useGameStore = create<GameStore>((set, get) => ({
       setTimeout(() => set({ error: null }), 3000);
     });
 
-    socket.on('game:hunterRequired', ({ playerId }) => {
+    socket.on('game:hunterRequired', ({ playerId, timer, endsAt }) => {
       console.log('Hunter required:', playerId);
       const gameState = get().gameState;
       if (gameState) {
-        set({ gameState: { ...gameState, phase: GamePhase.HUNTER_SHOOT } });
+        const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
+        set({
+          speaking: null,
+          witchInfo: null,
+          gameState: {
+            ...gameState,
+            phase: GamePhase.HUNTER_SHOOT,
+            phaseTimer,
+            phaseEndsAt: endsAt,
+            paused: false,
+            pausedAt: null,
+            remainingMs: null
+          }
+        });
       }
     });
 
-    socket.on('game:wolfKingRequired', ({ playerId }) => {
+    socket.on('game:wolfKingRequired', ({ playerId, timer, endsAt }) => {
       console.log('Wolf king required:', playerId);
       const gameState = get().gameState;
       if (gameState) {
-        set({ gameState: { ...gameState, phase: GamePhase.WOLF_KING_SHOOT } });
+        const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
+        set({
+          speaking: null,
+          witchInfo: null,
+          gameState: {
+            ...gameState,
+            phase: GamePhase.WOLF_KING_SHOOT,
+            phaseTimer,
+            phaseEndsAt: endsAt,
+            paused: false,
+            pausedAt: null,
+            remainingMs: null
+          }
+        });
       }
     });
 
@@ -487,8 +557,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       sessionId: null,
       myRole: null,
       gameState: null,
+      skillState: null,
       deathEvents: [],
-      voteResult: null
+      voteResult: null,
+      revealedPlayers: null
     });
   },
 
