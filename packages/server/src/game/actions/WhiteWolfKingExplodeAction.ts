@@ -29,7 +29,7 @@ export class WhiteWolfKingExplodeAction {
 
   execute(room: Room, gameState: GameState, player: Player, targetId: string): WhiteWolfKingExplodeResult {
     if (!this.canExecute(gameState, player)) {
-      return { ok: false, error: '当前阶段不能发动白狼王自曝' };
+      return { ok: false, error: '当前阶段不能自曝带走' };
     }
 
     const target = room.players.find(candidate => candidate.id === targetId);

@@ -93,7 +93,7 @@ export function Game() {
       night: '夜间死亡',
       voted: '投票放逐',
       shot: '开枪带走',
-      self_exposed: '狼人自曝',
+      self_exposed: '自曝出局',
       exploded: '白狼王带走'
     };
     return names[reason];
@@ -298,11 +298,21 @@ export function Game() {
     if (!selectedTarget) return;
     const targetName = getPlayerName(selectedTarget);
     confirmThen({
-      title: '白狼王自曝',
+      title: '自曝带走',
       message: `确认自曝并带走 ${targetName}？发动后你会出局，并中断白天流程直接进入下一夜。`,
       confirmLabel: '自曝带走',
       tone: 'danger'
     }, () => whiteWolfKingExplode(selectedTarget));
+  };
+
+  const handleAbstainVote = () => {
+    setSelectedTarget(null);
+    abstainVote();
+  };
+
+  const handleWitchPass = () => {
+    setSelectedTarget(null);
+    witchPass();
   };
 
   const getActionName = () => {
@@ -637,7 +647,8 @@ export function Game() {
               const isGuardRepeatTarget = currentPhase === GamePhase.NIGHT_GUARD &&
                 roleHasAbility(myRole, RoleAbility.GUARD_PROTECT) &&
                 player.id === lastGuardTargetId;
-              const isTargetable = !isDead && !isGuardRepeatTarget && wolfTargetAllowed && (canTargetSelf || !isMe) && canSelectTarget();
+              const isVoteLocked = currentPhase === GamePhase.DAY_VOTE && hasCompletedVote;
+              const isTargetable = !isDead && !isVoteLocked && !isGuardRepeatTarget && wolfTargetAllowed && (canTargetSelf || !isMe) && canSelectTarget();
               const isOffline = !player.online;
               const isCurrentSpeaker = isSpeakingPhase && player.id === currentSpeakerId;
               const hasPlayerSpoken = speaking?.confirmed.includes(player.id) ?? false;
@@ -920,7 +931,7 @@ export function Game() {
               disabled={isPaused || !selectedTarget}
               className="w-full py-3.5 rounded-xl font-display text-base tracking-wide text-white bg-gradient-to-r from-purple-700 to-purple-500 active:scale-[0.97] transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              白狼王自曝带走
+              自曝带走
             </button>
           </div>
         </div>
@@ -994,7 +1005,7 @@ export function Game() {
 
               {currentPhase === GamePhase.NIGHT_WITCH && (
                 <button
-                  onClick={witchPass}
+                  onClick={handleWitchPass}
                   disabled={isPaused}
                   className="px-5 py-3.5 rounded-xl glass text-moon-dim font-display text-sm shrink-0 active:scale-95 transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
                 >
@@ -1030,7 +1041,7 @@ export function Game() {
                 <>
                   {currentPhase === GamePhase.DAY_VOTE && (
                     <button
-                      onClick={abstainVote}
+                      onClick={handleAbstainVote}
                       disabled={isPaused || hasCompletedVote}
                       className="px-5 py-3.5 rounded-xl glass text-moon-dim font-display text-sm shrink-0 active:scale-95 transition-transform disabled:opacity-30 disabled:cursor-not-allowed"
                     >
