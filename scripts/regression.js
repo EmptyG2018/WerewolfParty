@@ -149,7 +149,8 @@ function makeClient(serverUrl, name) {
         ...client.gameState,
         phase: data.phase,
         phaseTimer: data.timer,
-        phaseEndsAt: data.endsAt
+        phaseEndsAt: data.endsAt,
+        speaking: data.speaking ?? client.gameState.speaking
       };
     }
   });
@@ -162,7 +163,27 @@ function makeClient(serverUrl, name) {
   socket.on('game:skillState', data => client.skillStates.push(data));
   socket.on('game:wolfSelectionUpdate', data => client.wolfSelections.push(data.selections));
   socket.on('game:wolfVoteUpdate', data => client.wolfVotes.push(data.wolfVotes));
-  socket.on('game:playerDead', data => client.deaths.push(data));
+  socket.on('game:playerDead', data => {
+    client.deaths.push(data);
+    if (client.room) {
+      client.room = {
+        ...client.room,
+        players: client.room.players.map(player =>
+          player.id === data.playerId ? { ...player, status: 'dead' } : player
+        )
+      };
+    }
+    if (client.gameState) {
+      const currentDeaths = client.gameState.deadPlayers ?? [];
+      const alreadyRecorded = currentDeaths.some(dead =>
+        dead.playerId === data.playerId && dead.day === data.day && dead.reason === data.reason
+      );
+      client.gameState = {
+        ...client.gameState,
+        deadPlayers: alreadyRecorded ? currentDeaths : [...currentDeaths, data]
+      };
+    }
+  });
   socket.on('game:reviewEvent', data => {
     client.reviewEvents.push(data.event);
     if (client.gameState) {
@@ -198,9 +219,13 @@ async function createStartedRoom(serverUrl, prefix, config = {}) {
     await once(clients[index].socket, 'room:joined');
   }
 
-  clients.forEach(client => client.socket.emit('room:ready', { ready: true }));
+  clients.slice(1).forEach(client => client.socket.emit('room:ready', { ready: true }));
   await waitForRoomState(clients, room => {
-    return room.players.length === room.config.maxPlayers && room.players.every(player => player.isReady);
+    return room.players.length === room.config.maxPlayers &&
+      room.players.find(player => player.id === room.hostId)?.isReady === false &&
+      room.players
+        .filter(player => player.id !== room.hostId)
+        .every(player => player.isReady);
   });
 
   clients[0].socket.emit('room:start');
@@ -322,6 +347,22 @@ function waitForWitchInfo(client, predicate, timeout = 5000) {
       resolve(data);
     };
     client.socket.on('game:witchInfo', handler);
+  });
+}
+
+function waitForVoteResult(client, timeout = 1000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      client.socket.off('game:voteResult', handler);
+      reject(new Error('Timeout waiting early game:voteResult'));
+    }, timeout);
+
+    const handler = data => {
+      clearTimeout(timer);
+      client.socket.off('game:voteResult', handler);
+      resolve(data);
+    };
+    client.socket.on('game:voteResult', handler);
   });
 }
 
@@ -576,34 +617,107 @@ async function testRoomReadyGate(serverUrl) {
       await once(clients[index].socket, 'room:joined');
     }
 
-    clients.slice(0, -1).forEach(client => client.socket.emit('room:ready', { ready: true }));
+    const nonHostPlayersReady = (room) => {
+      const hostId = room.hostId;
+      return room.players
+        .filter(player => player.id !== hostId)
+        .every(player => player.isReady);
+    };
+    const hostIsUnready = (room) => {
+      return room.players.find(player => player.id === room.hostId)?.isReady === false;
+    };
+
+    clients[0].socket.emit('room:ready', { ready: true });
+    await sleep(100);
+    const hostReadyIgnored = hostIsUnready(clients[0].room);
+
+    clients.slice(1, -1).forEach(client => client.socket.emit('room:ready', { ready: true }));
     await waitForRoomState(clients, room => {
       return room.players.length === room.config.maxPlayers &&
-        room.players.filter(player => player.isReady).length === clients.length - 1;
+        hostIsUnready(room) &&
+        !room.players.find(player => player.id === clients[clients.length - 1].playerId)?.isReady &&
+        !nonHostPlayersReady(room);
     });
 
     clients[0].socket.emit('room:start');
     await sleep(300);
 
-    const blockedWithoutAllReady = clients[0].errors.includes('所有玩家准备后才能开始游戏');
+    const blockedWithoutAllReady = clients[0].errors.includes('除房主外所有玩家准备后才能开始游戏');
     const startedTooEarly = clients.some(client => client.gameState !== null);
 
     clients[clients.length - 1].socket.emit('room:ready', { ready: true });
     await waitForRoomState(clients, room => {
-      return room.players.length === room.config.maxPlayers && room.players.every(player => player.isReady);
+      return room.players.length === room.config.maxPlayers &&
+        hostIsUnready(room) &&
+        nonHostPlayersReady(room);
     });
 
     clients[0].socket.emit('room:start');
     await Promise.all(clients.map(client => once(client.socket, 'game:started')));
 
-    assert(blockedWithoutAllReady, 'room start was not blocked when a player was unready');
-    assert(!startedTooEarly, 'room started before all players were ready');
-    assert(clients.every(client => client.gameState !== null), 'room did not start after all players became ready');
+    assert(hostReadyIgnored, 'host ready event should be ignored');
+    assert(blockedWithoutAllReady, 'room start was not blocked when a non-host player was unready');
+    assert(!startedTooEarly, 'room started before all non-host players were ready');
+    assert(clients.every(client => client.gameState !== null), 'room did not start after all non-host players became ready');
 
     return {
       roomId,
+      hostReadyIgnored,
       blockedWithoutAllReady,
       startedPlayers: clients.filter(client => client.gameState !== null).length
+    };
+  } finally {
+    disconnectAll(clients);
+  }
+}
+
+async function testDayVoteEarlyResolution(serverUrl) {
+  const { roomId, clients } = await createStartedRoom(serverUrl, 'vote-fast-', { voteTime: 5 });
+
+  try {
+    const nonWolfTarget = clients.find(client => client.role === Role.VILLAGER) ??
+      clients.find(client =>
+        client.role !== Role.WEREWOLF &&
+        client.role !== Role.WOLF_KING &&
+        client.role !== Role.HUNTER
+      );
+    if (!nonWolfTarget) throw new Error('Missing non-wolf target');
+
+    await driveFirstNightToWitch(clients, nonWolfTarget.playerId);
+    await waitForPhase(clients, GamePhase.DAY_ANNOUNCE);
+    await waitForPhase(clients, GamePhase.DAY_SPEAKING, 8000);
+
+    while (clients[0].gameState?.phase === GamePhase.DAY_SPEAKING) {
+      const speaking = clients[0].gameState.speaking;
+      const currentSpeakerId = speaking?.order?.[speaking.currentIndex];
+      if (!currentSpeakerId) break;
+      const speaker = clients.find(client => client.playerId === currentSpeakerId);
+      if (!speaker) throw new Error(`Missing speaker client ${currentSpeakerId}`);
+      speaker.socket.emit('game:speakingDone');
+      await sleep(50);
+    }
+
+    await waitForPhase(clients, GamePhase.DAY_VOTE, 5000);
+    const deadPlayerIds = new Set([
+      ...(clients[0].gameState?.deadPlayers ?? []).map(dead => dead.playerId),
+      ...clients[0].deaths.map(death => death.playerId)
+    ]);
+    const aliveClients = clients.filter(client => {
+      return client.playerId && !deadPlayerIds.has(client.playerId);
+    });
+    const voteResultPromise = waitForVoteResult(clients[0], 1200);
+    aliveClients.forEach((client, index) => {
+      const target = aliveClients[(index + 1) % aliveClients.length];
+      client.socket.emit('game:vote', { targetId: target.playerId });
+    });
+
+    const voteResult = await voteResultPromise;
+    assert(voteResult.details && Object.keys(voteResult.details).length === aliveClients.length, 'early vote result did not include all alive voters');
+
+    return {
+      roomId,
+      aliveVoters: aliveClients.length,
+      voteDetails: Object.keys(voteResult.details).length
     };
   } finally {
     disconnectAll(clients);
@@ -892,6 +1006,7 @@ async function main() {
     results.push(['wolf king hidden phase', await testWolfKingHiddenPhase(serverUrl)]);
     results.push(['public state isolation', await testPublicStateIsolation(serverUrl)]);
     results.push(['room ready gate', await testRoomReadyGate(serverUrl)]);
+    results.push(['day vote early resolution', await testDayVoteEarlyResolution(serverUrl)]);
     results.push(['wolf friendly fire disabled', await testWolfFriendlyFireDisabled(serverUrl)]);
     results.push(['same guard and save kills target', await testSameGuardAndSaveKillsTarget(serverUrl)]);
 

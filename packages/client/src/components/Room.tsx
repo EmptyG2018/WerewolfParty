@@ -13,10 +13,11 @@ export function Room() {
 
   const isHost = room.hostId === myId;
   const allOnline = room.players.every(p => p.online);
-  const allReady = room.players.length > 0 && room.players.every(p => p.isReady);
+  const nonHostPlayers = room.players.filter(player => player.id !== room.hostId);
+  const allNonHostReady = nonHostPlayers.length > 0 && nonHostPlayers.every(player => player.isReady);
   const missingPlayers = Math.max(0, room.config.maxPlayers - room.players.length);
   const isFull = missingPlayers === 0;
-  const canStart = isFull && allOnline && allReady;
+  const canStart = isFull && allOnline && allNonHostReady;
 
   const copyRoomId = () => {
     navigator.clipboard.writeText(room.id);
@@ -137,7 +138,7 @@ export function Room() {
                   {!isEmpty && player.id === room.hostId && (
                     <div className="absolute -top-1.5 -right-1.5 text-[10px]">👑</div>
                   )}
-                  {!isEmpty && player.isReady && (
+                  {!isEmpty && player.id !== room.hostId && player.isReady && (
                     <div className="absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full bg-heal flex items-center justify-center text-[9px] text-white font-bold">
                       ✓
                     </div>
@@ -158,11 +159,14 @@ export function Room() {
                           </span>
                         )}
                       </div>
-                      {player.id === room.hostId && (
-                        <span className="text-[9px] text-gold tracking-wider">房主</span>
-                      )}
-                      <span className={`text-[9px] tracking-wider ${player.isReady ? 'text-heal' : 'text-moon-mist'}`}>
-                        {player.isReady ? '已准备' : '未准备'}
+                      <span className={`text-[9px] tracking-wider ${
+                        player.id === room.hostId
+                          ? 'text-gold'
+                          : player.isReady
+                          ? 'text-heal'
+                          : 'text-moon-mist'
+                      }`}>
+                        {player.id === room.hostId ? '房主' : player.isReady ? '已准备' : '未准备'}
                       </span>
                     </>
                   )}
@@ -302,17 +306,19 @@ export function Room() {
 
       {/* Bottom Action */}
       <div className="px-5 pb-safe pt-2 pb-4">
-        <button
-          onClick={() => setReady(!isReady)}
-          disabled={!myPlayer?.online || room.status !== 'waiting'}
-          className={`mb-2 w-full py-3 rounded-2xl font-display text-base tracking-wide transition-all active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed ${
-            isReady
-              ? 'glass text-moon-dim hover:bg-white/[0.08]'
-              : 'bg-gradient-to-r from-heal-dark to-heal text-white'
-          }`}
-        >
-          {isReady ? '取消准备' : '准备'}
-        </button>
+        {!isHost && (
+          <button
+            onClick={() => setReady(!isReady)}
+            disabled={!myPlayer?.online || room.status !== 'waiting'}
+            className={`mb-2 w-full py-3 rounded-2xl font-display text-base tracking-wide transition-all active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed ${
+              isReady
+                ? 'glass text-moon-dim hover:bg-white/[0.08]'
+                : 'bg-gradient-to-r from-heal-dark to-heal text-white'
+            }`}
+          >
+            {isReady ? '取消准备' : '准备'}
+          </button>
+        )}
 
         {isHost ? (
           <button
@@ -323,7 +329,7 @@ export function Room() {
             <div className="absolute inset-0 bg-gradient-to-r from-blood-700 via-blood to-blood-700 group-hover:from-blood-600 group-hover:via-blood-500 group-hover:to-blood-600 group-disabled:from-forest-50 group-disabled:via-forest-50 group-disabled:to-forest-50 transition-all" />
             <div className="absolute inset-0 opacity-0 group-hover:opacity-100 group-disabled:opacity-0 transition-opacity bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,0.1),transparent_70%)]" />
             <span className="relative z-10 text-white group-disabled:text-moon-mist">
-              {canStart ? '开始游戏' : !allOnline ? '等待离线玩家' : !isFull ? `还差 ${missingPlayers} 人` : '等待玩家准备'}
+              {canStart ? '开始游戏' : !allOnline ? '等待离线玩家' : !isFull ? `还差 ${missingPlayers} 人` : '等待其他玩家准备'}
             </span>
           </button>
         ) : (
@@ -341,7 +347,7 @@ export function Room() {
               ? '所有玩家在线后才能开始'
               : !isFull
               ? `需要 ${room.config.maxPlayers} 名玩家满员后才能开始`
-              : '所有玩家准备后才能开始'}
+              : '除房主外所有玩家准备后才能开始'}
           </p>
         )}
       </div>

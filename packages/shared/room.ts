@@ -31,7 +31,7 @@ export const DEFAULT_ROOM_CONFIG: RoomConfig = {
   wolfCount: 3,
   voteTime: 60,
   roleConfirmTime: 30,
-  allowWitchSelfSave: false,
+  allowWitchSelfSave: true,
   allowWolfFriendlyFire: true,
   hybridRoles: []
 };

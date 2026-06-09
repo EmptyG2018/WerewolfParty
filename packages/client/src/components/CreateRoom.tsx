@@ -367,7 +367,7 @@ export function CreateRoom() {
             <div className="flex-1 min-w-0">
               <div className="text-sm text-moon">允许女巫自救</div>
               <div className="text-[10px] text-moon-mist mt-0.5">
-                默认关闭；开启后女巫可用解药救自己
+                默认开启；开启后女巫可用解药救自己
               </div>
             </div>
             <div className={`w-11 h-6 rounded-full p-0.5 transition-colors ${allowWitchSelfSave ? 'bg-poison' : 'bg-forest-50'}`}>

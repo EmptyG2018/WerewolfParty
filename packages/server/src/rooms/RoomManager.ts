@@ -311,6 +311,13 @@ export class RoomManager {
       socket.emit('room:error', { message: '游戏已开始，无法修改准备状态' });
       return;
     }
+    if (player.id === room.hostId) {
+      if (player.isReady) {
+        player.isReady = false;
+        this.broadcastRoomUpdate(room.id);
+      }
+      return;
+    }
 
     player.isReady = ready;
     this.broadcastRoomUpdate(room.id);

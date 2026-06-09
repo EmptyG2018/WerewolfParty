@@ -503,8 +503,8 @@ export class GameManager {
       socket.emit('game:error', { message: '有玩家离线，暂时无法开始游戏' });
       return;
     }
-    if (room.players.some(player => !player.isReady)) {
-      socket.emit('game:error', { message: '所有玩家准备后才能开始游戏' });
+    if (room.players.some(player => player.id !== room.hostId && !player.isReady)) {
+      socket.emit('game:error', { message: '除房主外所有玩家准备后才能开始游戏' });
       return;
     }
 
