@@ -70,7 +70,7 @@ export interface DeadPlayer {
 }
 
 export type DeathReason = 'killed' | 'voted' | 'poisoned' | 'shot' | 'self_exposed' | 'exploded';
-export type PublicDeathReason = 'night' | 'voted' | 'shot' | 'self_exposed' | 'exploded';
+export type PublicDeathReason = 'night' | 'voted' | 'skill' | 'self_exposed' | 'exploded';
 
 export interface PublicDeadPlayer {
   playerId: string;
@@ -101,6 +101,31 @@ export interface VoteHistoryEntry {
   isTie: boolean;
 }
 
+export type ReviewEventType =
+  | 'night_result'
+  | 'vote_result'
+  | 'self_reveal'
+  | 'self_reveal_take'
+  | 'skill_take'
+  | 'skill_pass';
+
+export interface ReviewEvent {
+  id: string;
+  day: number;
+  phase: GamePhase;
+  type: ReviewEventType;
+  timestamp: number;
+  actorId?: string;
+  targetId?: string | null;
+  interrupted?: boolean;
+  deaths?: PublicDeadPlayer[];
+  votes?: Record<string, string | null>;
+  voteCount?: Record<string, number>;
+  eliminated?: string | null;
+  abstained?: number;
+  isTie?: boolean;
+}
+
 export interface GameState {
   phase: GamePhase;
   day: number;
@@ -116,6 +141,7 @@ export interface GameState {
   winner: 'villager' | 'werewolf' | null;
   votes: Record<string, string | null>;
   voteHistory: VoteHistoryEntry[];
+  reviewEvents: ReviewEvent[];
   seerCheckResult: { playerId: string; isWerewolf: boolean } | null;
   witchSaveUsed: boolean;
   witchPoisonUsed: boolean;

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Player, PublicGameState, PublicRoom, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage, PublicDeathReason } from '@werewolf/shared';
+import { Player, PublicGameState, PublicRoom, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage, PublicDeathReason, ReviewEvent } from '@werewolf/shared';
 import { socket } from '../lib/socket';
 
 type View = 'home' | 'create' | 'room' | 'game';
@@ -463,6 +463,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
           votes: details,
           voteHistory: nextHistory
         } : gameState
+      });
+    });
+
+    socket.on('game:reviewEvent', ({ event }: { event: ReviewEvent }) => {
+      const gameState = get().gameState;
+      if (!gameState) return;
+      const currentEvents = gameState.reviewEvents ?? [];
+      if (currentEvents.some(current => current.id === event.id)) return;
+      set({
+        gameState: {
+          ...gameState,
+          reviewEvents: [...currentEvents, event]
+        }
       });
     });
 

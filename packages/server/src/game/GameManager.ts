@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import {
   Room, Player, Role, GamePhase, GameState, SpeakingState, DeathReason,
-  PublicDeathReason, PublicGameState, ClientToServerEvents, ServerToClientEvents,
+  PublicDeathReason, PublicGameState, ReviewEvent, ClientToServerEvents, ServerToClientEvents,
   RoleAbility, isWolfRole, roleHasAbility, roleRevealsAsWolf
 } from '@werewolf/shared';
 import { RoomManager } from '../rooms/RoomManager';
@@ -147,7 +147,52 @@ export class GameManager {
 
   private toPublicDeathReason(reason: DeathReason): PublicDeathReason {
     if (reason === 'killed' || reason === 'poisoned') return 'night';
+    if (reason === 'shot') return 'skill';
     return reason;
+  }
+
+  private addReviewEvent(
+    roomId: string,
+    event: Omit<ReviewEvent, 'id' | 'timestamp'>
+  ): ReviewEvent | null {
+    const gameState = this.gameStates.get(roomId);
+    if (!gameState) return null;
+
+    const reviewEvent: ReviewEvent = {
+      ...event,
+      id: generateMessageId(),
+      timestamp: Date.now()
+    };
+    gameState.reviewEvents.push(reviewEvent);
+    this.io.to(roomId).emit('game:reviewEvent', { event: reviewEvent });
+    return reviewEvent;
+  }
+
+  private addNightResultReview(roomId: string, gameState: GameState, deadPlayers: DeathRecord[]): void {
+    const nightDeaths = deadPlayers.filter(deadPlayer =>
+      deadPlayer.reason === 'killed' || deadPlayer.reason === 'poisoned'
+    );
+    this.addReviewEvent(roomId, {
+      day: gameState.day,
+      phase: GamePhase.DAY_ANNOUNCE,
+      type: 'night_result',
+      deaths: nightDeaths.map(deadPlayer => ({
+        playerId: deadPlayer.playerId,
+        reason: 'night',
+        day: gameState.day
+      }))
+    });
+  }
+
+  private addSkillTakeReview(roomId: string, gameState: GameState, actorId: string, targetId: string): void {
+    this.addReviewEvent(roomId, {
+      day: gameState.day,
+      phase: GamePhase.DAY_RESOLVING,
+      type: 'skill_take',
+      actorId,
+      targetId,
+      deaths: [{ playerId: targetId, reason: 'skill', day: gameState.day }]
+    });
   }
 
   private shouldExposeDeadPlayer(dead: { reason: DeathReason; day: number }, gameState: GameState): boolean {
@@ -363,6 +408,12 @@ export class GameManager {
       if (pending?.playerId !== hunterId) return;
       this.hunterShotsUsed.add(hunterId);
       this.pendingHunterShots.delete(roomId);
+      this.addReviewEvent(roomId, {
+        day: gameState.day,
+        phase: GamePhase.DAY_RESOLVING,
+        type: 'skill_pass',
+        actorId: hunterId
+      });
       resume();
     });
   }
@@ -370,10 +421,19 @@ export class GameManager {
   private passHunterShot(roomId: string, hunterId: string): boolean {
     const pending = this.pendingHunterShots.get(roomId);
     if (!pending || pending.playerId !== hunterId) return false;
+    const gameState = this.gameStates.get(roomId);
 
     this.hunterShotsUsed.add(hunterId);
     this.pendingHunterShots.delete(roomId);
     this.clearPhaseTimer(roomId);
+    if (gameState) {
+      this.addReviewEvent(roomId, {
+        day: gameState.day,
+        phase: GamePhase.DAY_RESOLVING,
+        type: 'skill_pass',
+        actorId: hunterId
+      });
+    }
     pending.resume();
     return true;
   }
@@ -882,6 +942,14 @@ export class GameManager {
     this.wolfSelections.set(room.id, new Map());
 
     this.emitPlayerDead(room.id, player.id, 'self_exposed', gameState.day);
+    this.addReviewEvent(room.id, {
+      day: gameState.day,
+      phase: gameState.phase,
+      type: 'self_reveal',
+      actorId: player.id,
+      interrupted: true,
+      deaths: [{ playerId: player.id, reason: 'self_exposed', day: gameState.day }]
+    });
     this.io.to(room.id).emit('game:systemMessage', {
       id: generateMessageId(),
       content: `${this.getPlayerNumber(player)}号 ${player.name} 自曝，白天流程中断`,
@@ -917,6 +985,18 @@ export class GameManager {
 
     this.emitPlayerDead(room.id, player.id, 'self_exposed', gameState.day);
     this.emitPlayerDead(room.id, targetId, 'exploded', gameState.day);
+    this.addReviewEvent(room.id, {
+      day: gameState.day,
+      phase: gameState.phase,
+      type: 'self_reveal_take',
+      actorId: player.id,
+      targetId,
+      interrupted: true,
+      deaths: [
+        { playerId: player.id, reason: 'self_exposed', day: gameState.day },
+        { playerId: targetId, reason: 'exploded', day: gameState.day }
+      ]
+    });
     this.io.to(room.id).emit('game:systemMessage', {
       id: generateMessageId(),
       content: `${this.getPlayerNumber(player)}号 ${player.name} 白狼王自曝，带走 ${target ? `${this.getPlayerNumber(target)}号 ${target.name}` : '一名玩家'}`,
@@ -1159,6 +1239,7 @@ export class GameManager {
 
     const winner = this.engine.checkWinner(room);
     if (winner) {
+      this.addNightResultReview(roomId, gameState, deathRecords);
       this.emitDeathRecords(roomId, deathRecords, gameState.day);
       this.endGame(roomId, winner);
       return;
@@ -1189,6 +1270,11 @@ export class GameManager {
     if (!room || !gameState) return;
 
     this.setPhaseClock(gameState, GamePhase.DAY_ANNOUNCE, 5);
+    this.addNightResultReview(roomId, gameState, deadPlayers);
+    const wolfKingSkillDeath = deadPlayers.find(deadPlayer => deadPlayer.reason === 'shot');
+    if (wolfKingSkillDeath && gameState.lastKilledPlayer) {
+      this.addSkillTakeReview(roomId, gameState, gameState.lastKilledPlayer, wolfKingSkillDeath.playerId);
+    }
     this.emitDeathRecords(roomId, deadPlayers, gameState.day);
     // 当前规则只让被狼人夜刀的猎人在天亮公告后触发技能；被毒或技能带走不会触发。
     const hunterToShoot = deadPlayers
@@ -1400,6 +1486,16 @@ export class GameManager {
       abstained: result.abstained,
       isTie: result.isTie
     };
+    this.addReviewEvent(roomId, {
+      day: gameState.day,
+      phase: GamePhase.DAY_VOTE,
+      type: 'vote_result',
+      votes: details,
+      voteCount: { ...result.voteCount },
+      eliminated: result.eliminatedId,
+      abstained: result.abstained,
+      isTie: result.isTie
+    });
     const existingHistoryIndex = gameState.voteHistory.findIndex(entry => entry.day === gameState.day);
     if (existingHistoryIndex >= 0) {
       gameState.voteHistory[existingHistoryIndex] = historyEntry;
@@ -1469,6 +1565,7 @@ export class GameManager {
     const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
     if (shotPlayer) {
       this.emitPlayerDead(ctx.room.id, targetId, 'shot', ctx.gameState.day);
+      this.addSkillTakeReview(ctx.room.id, ctx.gameState, ctx.player.id, targetId);
     }
     this.pendingHunterShots.delete(ctx.room.id);
 
@@ -1498,6 +1595,7 @@ export class GameManager {
     const shotPlayer = this.engine.killPlayer(ctx.room, ctx.gameState, targetId, 'shot');
     if (shotPlayer) {
       this.emitPlayerDead(ctx.room.id, targetId, 'shot', ctx.gameState.day);
+      this.addSkillTakeReview(ctx.room.id, ctx.gameState, ctx.player.id, targetId);
     }
     this.pendingHunterShots.delete(ctx.room.id);
     this.clearPhaseTimer(ctx.room.id);
@@ -1532,6 +1630,10 @@ export class GameManager {
 
     const winner = this.engine.checkWinner(ctx.room);
     if (winner) {
+      this.addNightResultReview(ctx.room.id, ctx.gameState, deaths);
+      if (shotPlayer) {
+        this.addSkillTakeReview(ctx.room.id, ctx.gameState, ctx.player.id, targetId);
+      }
       this.emitDeathRecords(ctx.room.id, deaths, ctx.gameState.day);
       this.endGame(ctx.room.id, winner);
       return;
@@ -1560,6 +1662,10 @@ export class GameManager {
 
     const winner = this.engine.checkWinner(ctx.room);
     if (winner) {
+      this.addNightResultReview(ctx.room.id, ctx.gameState, deaths);
+      if (shotPlayer) {
+        this.addSkillTakeReview(ctx.room.id, ctx.gameState, ctx.player.id, targetId);
+      }
       this.emitDeathRecords(ctx.room.id, deaths, ctx.gameState.day);
       this.endGame(ctx.room.id, winner);
       return true;

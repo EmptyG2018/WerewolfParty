@@ -122,6 +122,7 @@ function makeClient(serverUrl, name) {
     wolfSelections: [],
     wolfVotes: [],
     deaths: [],
+    reviewEvents: [],
     joinedRooms: [],
     updatedRooms: [],
     errors: []
@@ -162,6 +163,15 @@ function makeClient(serverUrl, name) {
   socket.on('game:wolfSelectionUpdate', data => client.wolfSelections.push(data.selections));
   socket.on('game:wolfVoteUpdate', data => client.wolfVotes.push(data.wolfVotes));
   socket.on('game:playerDead', data => client.deaths.push(data));
+  socket.on('game:reviewEvent', data => {
+    client.reviewEvents.push(data.event);
+    if (client.gameState) {
+      client.gameState = {
+        ...client.gameState,
+        reviewEvents: [...(client.gameState.reviewEvents ?? []), data.event]
+      };
+    }
+  });
   socket.on('game:error', data => client.errors.push(data.message));
   return client;
 }
@@ -449,6 +459,10 @@ async function testPublicStateIsolation(serverUrl) {
     const deadReasonLeaks = clients
       .flatMap(client => client.gameState.deadPlayers ?? [])
       .filter(dead => dead.reason === 'killed' || dead.reason === 'poisoned');
+    const reviewDeathReasonLeaks = clients
+      .flatMap(client => client.gameState.reviewEvents ?? [])
+      .flatMap(event => event.deaths ?? [])
+      .filter(dead => dead.reason === 'killed' || dead.reason === 'poisoned' || dead.reason === 'shot');
     const votesScopedToViewer = clients.every(client => {
       const voteKeys = Object.keys(client.gameState.votes ?? {});
       return voteKeys.length === 0 || voteKeys.every(key => key === client.playerId);
@@ -467,6 +481,7 @@ async function testPublicStateIsolation(serverUrl) {
     assert(!publicRoleLeakBeforeStart, 'public room leaked roles');
     assert(internalKeyLeaks.length === 0, `public gameState leaked internal keys: ${internalKeyLeaks.join(', ')}`);
     assert(deadReasonLeaks.length === 0, 'public gameState leaked internal death reasons');
+    assert(reviewDeathReasonLeaks.length === 0, 'public review events leaked internal death reasons');
     assert(votesScopedToViewer, 'public gameState leaked realtime votes');
     assert(seerResult && typeof seerResult.day === 'number', 'seer result did not include day');
     assert(nonSeerResultReceivers.length === 0, `seer result leaked to ${nonSeerResultReceivers.map(client => client.name).join(', ')}`);
@@ -662,8 +677,15 @@ async function testSameGuardAndSaveKillsTarget(serverUrl) {
     const deathReceivers = clients.filter(client =>
       client.deaths.some(death => death.playerId === target.playerId && death.reason === 'night')
     );
+    const reviewReceivers = clients.filter(client =>
+      client.reviewEvents.some(event =>
+        event.type === 'night_result' &&
+        (event.deaths ?? []).some(death => death.playerId === target.playerId && death.reason === 'night')
+      )
+    );
 
     assert(deathReceivers.length === clients.length, `same guard/save night death was not announced to all clients for ${target.name}`);
+    assert(reviewReceivers.length === clients.length, `same guard/save review event was not announced to all clients for ${target.name}`);
     assert(initialWitchState.witch.saveAvailable && initialWitchState.witch.poisonAvailable, 'witch initial private skill state was not available');
     assert(initialGuardState.guard.lastGuardTargetId === null, 'guard initial private skill state should have no previous target');
     assert(guardUsedState.guard.lastGuardTargetId === target.playerId, 'guard private skill state did not persist protected target');

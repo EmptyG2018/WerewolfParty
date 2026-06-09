@@ -213,6 +213,7 @@ export class GameEngine {
       winner: null,
       votes: {},
       voteHistory: [],
+      reviewEvents: [],
       seerCheckResult: null,
       witchSaveUsed: false,
       witchPoisonUsed: false,

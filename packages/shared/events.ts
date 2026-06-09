@@ -1,5 +1,5 @@
 import { Role } from './roles';
-import { GamePhase, Player, PublicDeathReason, PublicGameState, PublicPlayer, SeatSwapRequest, SpeakingState, SystemMessage } from './game';
+import { GamePhase, Player, PublicDeathReason, PublicGameState, PublicPlayer, ReviewEvent, SeatSwapRequest, SpeakingState, SystemMessage } from './game';
 import { PublicRoom, RoomConfig } from './room';
 
 export interface ClientToServerEvents {
@@ -63,6 +63,7 @@ export interface ServerToClientEvents {
   'game:wolfSelectionUpdate': (data: { selections: Record<string, string> }) => void;
   'game:roleConfirmed': (data: { playerId: string }) => void;
   'game:voteResult': (data: { votes: Record<string, number>; eliminated: string | null; abstained: number; isTie: boolean; details: Record<string, string | null> }) => void;
+  'game:reviewEvent': (data: { event: ReviewEvent }) => void;
   'game:over': (data: { winner: 'villager' | 'werewolf'; players: Player[] }) => void;
   'game:systemMessage': (data: SystemMessage) => void;
   'game:error': (data: { message: string }) => void;
