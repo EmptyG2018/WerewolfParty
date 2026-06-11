@@ -1,5 +1,6 @@
 import { Role, RoleGroup, canBeHybridRole, getRoleGroups, hasRoleGroup } from './roles';
 import { Player, PublicPlayer } from './game';
+import { ROOM_RULE_DEFAULTS } from './rules';
 
 export interface RoomConfig {
   maxPlayers: number;
@@ -26,13 +27,13 @@ export type PublicRoom = Omit<Room, 'players'> & {
 };
 
 export const DEFAULT_ROOM_CONFIG: RoomConfig = {
-  maxPlayers: 9,
+  maxPlayers: ROOM_RULE_DEFAULTS.maxPlayers,
   roles: [Role.WEREWOLF, Role.SEER, Role.WITCH, Role.HUNTER],
-  wolfCount: 3,
-  voteTime: 60,
-  roleConfirmTime: 30,
-  allowWitchSelfSave: true,
-  allowWolfFriendlyFire: true,
+  wolfCount: ROOM_RULE_DEFAULTS.wolfCount,
+  voteTime: ROOM_RULE_DEFAULTS.voteTime,
+  roleConfirmTime: ROOM_RULE_DEFAULTS.roleConfirmTime,
+  allowWitchSelfSave: ROOM_RULE_DEFAULTS.allowWitchSelfSave,
+  allowWolfFriendlyFire: ROOM_RULE_DEFAULTS.allowWolfFriendlyFire,
   hybridRoles: []
 };
 

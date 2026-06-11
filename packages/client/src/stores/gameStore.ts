@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Player, PublicGameState, PublicRoom, Role, GamePhase, SeatSwapRequest, SpeakingState, SystemMessage, PublicDeathReason, ReviewEvent } from '@werewolf/shared';
 import { socket } from '../lib/socket';
+import { ERROR_TOAST_DURATION_MS } from '../game-ui/timing';
 
 type View = 'home' | 'create' | 'room' | 'game';
 const SESSION_STORAGE_KEY = 'werewolf.sessionId';
@@ -268,7 +269,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     socket.on('room:error', ({ message }) => {
       set({ error: message, outgoingSwapRequest: null });
-      setTimeout(() => set({ error: null }), 3000);
+      setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
     });
 
     socket.on('room:playerJoined', ({ player }) => {
@@ -296,13 +297,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
       if (!success && message) {
         set({ error: message });
-        setTimeout(() => set({ error: null }), 3000);
+        setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
       }
     });
 
     socket.on('room:swapCancelled', ({ message }) => {
       set({ pendingSwapRequest: null, error: message });
-      setTimeout(() => set({ error: null }), 3000);
+      setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
     });
 
     socket.on('game:started', ({ gameState, myRole, wolfTeam }) => {
@@ -489,7 +490,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     socket.on('game:error', ({ message }) => {
       set({ error: message });
-      setTimeout(() => set({ error: null }), 3000);
+      setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
     });
 
     socket.on('game:hunterRequired', ({ playerId, timer, endsAt }) => {

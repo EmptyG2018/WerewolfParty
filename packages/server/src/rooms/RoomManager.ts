@@ -1,5 +1,9 @@
 import { Socket, Server } from 'socket.io';
-import { Room, Player, PublicRoom, PublicPlayer, RoomConfig, SeatSwapRequest, DEFAULT_ROOM_CONFIG, validateConfig, ClientToServerEvents, ServerToClientEvents } from '@werewolf/shared';
+import {
+  Room, Player, PublicRoom, PublicPlayer, RoomConfig, SeatSwapRequest,
+  DEFAULT_ROOM_CONFIG, ROOM_ERROR_MESSAGES, ROOM_RESULT_MESSAGES,
+  ClientToServerEvents, ServerToClientEvents, playerSwapBusyMessage, validateConfig
+} from '@werewolf/shared';
 import { generateRoomId, generateSessionId } from '../utils';
 
 type TypedSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
@@ -53,6 +57,33 @@ export class RoomManager {
       ...player,
       role: null
     };
+  }
+
+  private isHost(room: Room, player: Player): boolean {
+    return room.hostId === player.id;
+  }
+
+  private resetReadyStates(room: Room): void {
+    // 规则配置变化或重新开局后，所有玩家都需要重新确认准备；房主无需准备但状态保持 false。
+    room.players.forEach(player => {
+      player.isReady = false;
+    });
+  }
+
+  private resetPlayerForWaiting(player: Player): void {
+    player.role = null;
+    player.status = 'alive';
+    player.isReady = false;
+    player.voteTarget = null;
+    player.skillUsed = { witchSave: false, witchPoison: false, lastGuardTarget: null };
+  }
+
+  private emitSwapResult(playerId: string, success: boolean, message: string): void {
+    this.io?.to(playerId).emit('room:swapResult', { success, message });
+  }
+
+  private emitSwapCancelled(playerId: string, request: SeatSwapRequest, message: string): void {
+    this.io?.to(playerId).emit('room:swapCancelled', { request, message });
   }
 
   addDebugPlayers(roomId: string, count: number): Player[] {
@@ -164,19 +195,19 @@ export class RoomManager {
     const room = this.rooms.get(roomId);
 
     if (!room) {
-      socket.emit('room:error', { message: '房间不存在' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.roomNotFound });
       return;
     }
     if (room.status !== 'waiting') {
-      socket.emit('room:error', { message: '游戏已经开始' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.gameAlreadyStarted });
       return;
     }
     if (room.players.length >= room.config.maxPlayers) {
-      socket.emit('room:error', { message: '房间已满' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.roomFull });
       return;
     }
     if (room.players.some(p => p.name === playerName)) {
-      socket.emit('room:error', { message: '昵称已被使用' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.duplicatedName });
       return;
     }
 
@@ -215,7 +246,7 @@ export class RoomManager {
   reconnectRoom(socket: TypedSocket, sessionId: string): Room | null {
     const roomId = this.sessionRooms.get(sessionId);
     if (!roomId) {
-      socket.emit('room:reconnectFailed', { message: '会话已失效' });
+      socket.emit('room:reconnectFailed', { message: ROOM_ERROR_MESSAGES.sessionExpired });
       return null;
     }
 
@@ -223,7 +254,7 @@ export class RoomManager {
     const player = room?.players.find(p => p.sessionId === sessionId);
     if (!room || !player) {
       this.sessionRooms.delete(sessionId);
-      socket.emit('room:reconnectFailed', { message: '房间已不存在' });
+      socket.emit('room:reconnectFailed', { message: ROOM_ERROR_MESSAGES.roomExpired });
       return null;
     }
 
@@ -279,12 +310,12 @@ export class RoomManager {
     const player = this.getPlayerBySocket(socket);
     if (!player) return;
 
-    if (room.hostId !== player.id) {
-      socket.emit('room:error', { message: '只有房主可以修改配置' });
+    if (!this.isHost(room, player)) {
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.hostOnlyUpdateConfig });
       return;
     }
     if (room.status !== 'waiting') {
-      socket.emit('room:error', { message: '游戏已经开始，无法修改配置' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.cannotUpdateConfigAfterStart });
       return;
     }
 
@@ -295,9 +326,7 @@ export class RoomManager {
     }
 
     room.config = { ...room.config, ...config };
-    room.players.forEach(roomPlayer => {
-      roomPlayer.isReady = false;
-    });
+    this.resetReadyStates(room);
     this.broadcastRoomUpdate(roomId);
   }
 
@@ -308,10 +337,10 @@ export class RoomManager {
     if (!player) return;
 
     if (room.status !== 'waiting') {
-      socket.emit('room:error', { message: '游戏已开始，无法修改准备状态' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.cannotReadyAfterStart });
       return;
     }
-    if (player.id === room.hostId) {
+    if (this.isHost(room, player)) {
       if (player.isReady) {
         player.isReady = false;
         this.broadcastRoomUpdate(room.id);
@@ -328,22 +357,18 @@ export class RoomManager {
     const player = this.getPlayerBySocket(socket);
     if (!room || !player) return false;
 
-    if (room.hostId !== player.id) {
-      socket.emit('room:error', { message: '只有房主可以重新开局' });
+    if (!this.isHost(room, player)) {
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.hostOnlyReset });
       return false;
     }
     if (room.status !== 'finished') {
-      socket.emit('room:error', { message: '游戏结束后才能重新开局' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.resetOnlyAfterFinished });
       return false;
     }
 
     room.status = 'waiting';
     room.players.forEach(roomPlayer => {
-      roomPlayer.role = null;
-      roomPlayer.status = 'alive';
-      roomPlayer.isReady = false;
-      roomPlayer.voteTarget = null;
-      roomPlayer.skillUsed = { witchSave: false, witchPoison: false, lastGuardTarget: null };
+      this.resetPlayerForWaiting(roomPlayer);
     });
 
     this.broadcastRoomUpdate(room.id);
@@ -371,7 +396,7 @@ export class RoomManager {
     if (!player) return;
 
     if (targetSeat < 0 || targetSeat >= room.config.maxPlayers) {
-      socket.emit('room:error', { message: '无效的座位号' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.invalidSeat });
       return;
     }
     if (player.seatIndex === targetSeat) return;
@@ -379,11 +404,11 @@ export class RoomManager {
     const targetPlayer = room.players.find(p => p.seatIndex === targetSeat);
     const myPending = this.findPendingSwapByPlayer(room.id, player.id);
     if (myPending) {
-      socket.emit('room:error', { message: '你已有座位交换正在处理中' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.swapAlreadyPending });
       return;
     }
     if (targetPlayer && this.findPendingSwapByPlayer(room.id, targetPlayer.id)) {
-      socket.emit('room:error', { message: `${targetPlayer.name} 正在与其他玩家交换位置` });
+      socket.emit('room:error', { message: playerSwapBusyMessage(targetPlayer.name) });
       return;
     }
 
@@ -402,7 +427,7 @@ export class RoomManager {
       this.pendingSwaps.set(player.id, request);
 
       this.io?.to(targetPlayer.id).emit('room:swapRequest', request);
-      socket.emit('room:swapResult', { success: true, message: '已发送交换请求，等待对方确认' });
+      this.emitSwapResult(player.id, true, ROOM_RESULT_MESSAGES.swapRequestSent);
     }
   }
 
@@ -414,18 +439,15 @@ export class RoomManager {
 
     const pending = this.getPendingSwapFromPlayer(roomId, playerId);
     if (!pending || pending.fromId !== playerId) {
-      socket.emit('room:error', { message: '没有可取消的交换请求' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.noCancelableSwap });
       return;
     }
 
     this.pendingSwaps.delete(pending.fromId);
     if (pending.targetId) {
-      this.io?.to(pending.targetId).emit('room:swapCancelled', {
-        request: pending,
-        message: '对方已取消交换请求'
-      });
+      this.emitSwapCancelled(pending.targetId, pending, ROOM_RESULT_MESSAGES.swapCancelledByPeer);
     }
-    socket.emit('room:swapResult', { success: false, message: '已取消交换请求' });
+    this.emitSwapResult(playerId, false, ROOM_RESULT_MESSAGES.swapCancelledBySelf);
   }
 
   acceptSwap(socket: TypedSocket): void {
@@ -436,7 +458,7 @@ export class RoomManager {
 
     const pending = this.findPendingSwapByPlayer(roomId, playerId);
     if (!pending || pending.targetId !== playerId) {
-      socket.emit('room:error', { message: '没有待处理的交换请求' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.noPendingSwap });
       return;
     }
 
@@ -447,12 +469,9 @@ export class RoomManager {
     const targetPlayer = room.players.find(p => p.id === pending.targetId);
     if (!fromPlayer || !targetPlayer) {
       this.pendingSwaps.delete(pending.fromId);
-      this.io?.to(pending.fromId).emit('room:swapResult', { success: false, message: '对方已离开，交换取消' });
+      this.emitSwapResult(pending.fromId, false, ROOM_RESULT_MESSAGES.swapPeerLeft);
       if (pending.targetId) {
-        this.io?.to(pending.targetId).emit('room:swapCancelled', {
-          request: pending,
-          message: '对方已离开，交换取消'
-        });
+        this.emitSwapCancelled(pending.targetId, pending, ROOM_RESULT_MESSAGES.swapPeerLeft);
       }
       return;
     }
@@ -462,9 +481,9 @@ export class RoomManager {
     targetPlayer.seatIndex = pending.fromSeat;
     this.pendingSwaps.delete(pending.fromId);
 
-    this.io?.to(pending.fromId).emit('room:swapResult', { success: true, message: '交换位置成功' });
+    this.emitSwapResult(pending.fromId, true, ROOM_RESULT_MESSAGES.swapSuccess);
     if (pending.targetId) {
-      this.io?.to(pending.targetId).emit('room:swapResult', { success: true, message: '交换位置成功' });
+      this.emitSwapResult(pending.targetId, true, ROOM_RESULT_MESSAGES.swapSuccess);
     }
     this.broadcastRoomUpdate(roomId);
   }
@@ -477,14 +496,14 @@ export class RoomManager {
 
     const pending = this.findPendingSwapByPlayer(roomId, playerId);
     if (!pending || pending.targetId !== playerId) {
-      socket.emit('room:error', { message: '没有待处理的交换请求' });
+      socket.emit('room:error', { message: ROOM_ERROR_MESSAGES.noPendingSwap });
       return;
     }
 
     this.pendingSwaps.delete(pending.fromId);
 
     // 通知发起者
-    this.io?.to(pending.fromId).emit('room:swapResult', { success: false, message: '对方拒绝了交换请求' });
+    this.emitSwapResult(pending.fromId, false, ROOM_RESULT_MESSAGES.swapRejected);
   }
 
   private cancelPendingSwap(playerId: string, roomId: string): void {
@@ -494,12 +513,9 @@ export class RoomManager {
     if (pending.fromId === playerId || pending.targetId === playerId) {
       this.pendingSwaps.delete(pending.fromId);
       if (pending.fromId === playerId && pending.targetId) {
-        this.io?.to(pending.targetId).emit('room:swapCancelled', {
-          request: pending,
-          message: '对方已离开，交换取消'
-        });
+        this.emitSwapCancelled(pending.targetId, pending, ROOM_RESULT_MESSAGES.swapPeerLeft);
       } else {
-        this.io?.to(pending.fromId).emit('room:swapResult', { success: false, message: '对方已离开，交换取消' });
+        this.emitSwapResult(pending.fromId, false, ROOM_RESULT_MESSAGES.swapPeerLeft);
       }
     }
   }

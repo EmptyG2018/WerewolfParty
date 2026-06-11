@@ -2,7 +2,10 @@ import { Server, Socket } from 'socket.io';
 import {
   Room, Player, Role, GamePhase, GameState, SpeakingState, DeathReason,
   PublicDeathReason, PublicGameState, ReviewEvent, ClientToServerEvents, ServerToClientEvents,
-  RoleAbility, isWolfRole, roleHasAbility, roleRevealsAsWolf
+  RoleAbility, isWolfRole, roleHasAbility, roleRevealsAsWolf,
+  GAME_ERROR_MESSAGES, PHASE_ADVANCE_DELAY_MS, PHASE_DURATION_SECONDS, SYSTEM_MESSAGES,
+  isNightDeathReason, roomNotFullMessage, toPublicDeathReason,
+  whiteWolfKingExplodeMessage, wolfSelfRevealMessage
 } from '@werewolf/shared';
 import { RoomManager } from '../rooms/RoomManager';
 import { GameEngine, NightActionKey } from './GameEngine';
@@ -23,8 +26,6 @@ type DeathRecord = {
   playerId: string;
   reason: DeathReason;
 };
-
-const PHASE_ADVANCE_DELAY_MS = 2000;
 
 export class GameManager {
   private roomManager: RoomManager;
@@ -64,7 +65,7 @@ export class GameManager {
     const gameState = this.gameStates.get(room.id);
     if (!gameState) return null;
     if (gameState.paused) {
-      socket.emit('game:error', { message: '游戏已暂停' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.paused });
       return null;
     }
     if (this.phaseAdvancingRooms.has(room.id)) return null;
@@ -83,6 +84,62 @@ export class GameManager {
 
   private getPlayerNumber(player: Player): number {
     return player.seatIndex + 1;
+  }
+
+  private isWolfPlayer(room: Room, player: Player): boolean {
+    return player.role !== null && isWolfRole(player.role, room.config.hybridRoles);
+  }
+
+  private getWolfTeam(room: Room): string[] {
+    return room.players
+      .filter(player => this.isWolfPlayer(room, player))
+      .map(player => player.id);
+  }
+
+  private getAliveWolves(room: Room): Player[] {
+    return room.players.filter(player => this.isWolfPlayer(room, player) && player.status === 'alive');
+  }
+
+  private getWolfSelections(roomId: string): Map<string, string> {
+    let selections = this.wolfSelections.get(roomId);
+    if (!selections) {
+      selections = new Map();
+      this.wolfSelections.set(roomId, selections);
+    }
+    return selections;
+  }
+
+  private getWolfVotes(roomId: string): Map<string, string> {
+    let votes = this.wolfVotes.get(roomId);
+    if (!votes) {
+      votes = new Map();
+      this.wolfVotes.set(roomId, votes);
+    }
+    return votes;
+  }
+
+  private mapToRecord(map?: Map<string, string>): Record<string, string> {
+    const record: Record<string, string> = {};
+    map?.forEach((value, key) => {
+      record[key] = value;
+    });
+    return record;
+  }
+
+  private emitWolfSelectionUpdate(room: Room, selections: Map<string, string>): void {
+    // 狼队夜晚协商数据只能发给狼队成员，不能通过公共广播泄露给好人阵营。
+    const payload = { selections: this.mapToRecord(selections) };
+    room.players
+      .filter(player => this.isWolfPlayer(room, player))
+      .forEach(player => this.io.to(player.id).emit('game:wolfSelectionUpdate', payload));
+  }
+
+  private emitWolfVoteUpdate(room: Room, votes: Map<string, string>): void {
+    // 确认刀票同样只属于狼队私有信息，避免非狼人通过实时状态推断夜晚结果。
+    const payload = { wolfVotes: this.mapToRecord(votes) };
+    room.players
+      .filter(player => this.isWolfPlayer(room, player))
+      .forEach(player => this.io.to(player.id).emit('game:wolfVoteUpdate', payload));
   }
 
   private hasAliveActorForPhase(room: Room, phase: GamePhase): boolean {
@@ -146,9 +203,7 @@ export class GameManager {
   }
 
   private toPublicDeathReason(reason: DeathReason): PublicDeathReason {
-    if (reason === 'killed' || reason === 'poisoned') return 'night';
-    if (reason === 'shot') return 'skill';
-    return reason;
+    return toPublicDeathReason(reason);
   }
 
   private addReviewEvent(
@@ -169,16 +224,14 @@ export class GameManager {
   }
 
   private addNightResultReview(roomId: string, gameState: GameState, deadPlayers: DeathRecord[]): void {
-    const nightDeaths = deadPlayers.filter(deadPlayer =>
-      deadPlayer.reason === 'killed' || deadPlayer.reason === 'poisoned'
-    );
+    const nightDeaths = deadPlayers.filter(deadPlayer => isNightDeathReason(deadPlayer.reason));
     this.addReviewEvent(roomId, {
       day: gameState.day,
       phase: GamePhase.DAY_ANNOUNCE,
       type: 'night_result',
       deaths: nightDeaths.map(deadPlayer => ({
         playerId: deadPlayer.playerId,
-        reason: 'night',
+        reason: toPublicDeathReason(deadPlayer.reason),
         day: gameState.day
       }))
     });
@@ -191,7 +244,7 @@ export class GameManager {
       type: 'skill_take',
       actorId,
       targetId,
-      deaths: [{ playerId: targetId, reason: 'skill', day: gameState.day }]
+      deaths: [{ playerId: targetId, reason: toPublicDeathReason('shot'), day: gameState.day }]
     });
   }
 
@@ -200,7 +253,7 @@ export class GameManager {
     if (
       gameState.phase === GamePhase.WOLF_KING_SHOOT &&
       dead.day === gameState.day &&
-      (dead.reason === 'killed' || dead.reason === 'poisoned')
+      isNightDeathReason(dead.reason)
     ) {
       return false;
     }
@@ -397,13 +450,14 @@ export class GameManager {
     }
 
     this.pendingHunterShots.set(roomId, { playerId: hunterId, resume });
-    const endsAt = this.setHiddenPhase(roomId, GamePhase.HUNTER_SHOOT, 15);
+    const timer = PHASE_DURATION_SECONDS.deathSkill;
+    const endsAt = this.setHiddenPhase(roomId, GamePhase.HUNTER_SHOOT, timer);
     // 只通知猎人本人显示操作入口；其他玩家只看到安全的结算等待阶段。
     room.players.forEach(player => {
-      this.emitPhaseToPlayer(player, gameState, 15, endsAt, 'game:phaseChanged');
+      this.emitPhaseToPlayer(player, gameState, timer, endsAt, 'game:phaseChanged');
     });
 
-    this.schedulePhaseTimeout(roomId, 15000, () => {
+    this.schedulePhaseTimeout(roomId, timer * 1000, () => {
       const pending = this.pendingHunterShots.get(roomId);
       if (pending?.playerId !== hunterId) return;
       this.hunterShotsUsed.add(hunterId);
@@ -447,9 +501,10 @@ export class GameManager {
     // 遗言复用 SpeakingState，使客户端同一套“发言完毕”按钮可以完成遗言。
     const speaking = { order: [playerId], currentIndex: 0, confirmed: [] };
     gameState.speaking = speaking;
-    this.emitPhaseChanged(roomId, GamePhase.LAST_WORDS, 30);
+    const timer = PHASE_DURATION_SECONDS.lastWords;
+    this.emitPhaseChanged(roomId, GamePhase.LAST_WORDS, timer);
     this.io.to(roomId).emit('game:speakingUpdate', { speaking });
-    this.schedulePhaseTimeout(roomId, 30000, resume);
+    this.schedulePhaseTimeout(roomId, timer * 1000, resume);
   }
 
   private completeLastWords(roomId: string, playerId?: string): void {
@@ -487,24 +542,24 @@ export class GameManager {
   startGame(socket: TypedSocket): void {
     const room = this.roomManager.getRoomBySocket(socket);
     if (!room) {
-      socket.emit('game:error', { message: '未找到房间' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.roomNotFound });
       return;
     }
     const host = this.roomManager.getPlayerBySocket(socket);
     if (!host || room.hostId !== host.id) {
-      socket.emit('game:error', { message: '只有房主可以开始游戏' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.hostOnlyStart });
       return;
     }
     if (room.players.length !== room.config.maxPlayers) {
-      socket.emit('game:error', { message: `需要${room.config.maxPlayers}名玩家满员后才能开始` });
+      socket.emit('game:error', { message: roomNotFullMessage(room.config.maxPlayers) });
       return;
     }
     if (room.players.some(player => !player.online)) {
-      socket.emit('game:error', { message: '有玩家离线，暂时无法开始游戏' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.playerOffline });
       return;
     }
     if (room.players.some(player => player.id !== room.hostId && !player.isReady)) {
-      socket.emit('game:error', { message: '除房主外所有玩家准备后才能开始游戏' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.nonHostPlayersNotReady });
       return;
     }
 
@@ -529,14 +584,12 @@ export class GameManager {
     const confirmTime = room.config.roleConfirmTime;
     this.setPhaseClock(gameState, GamePhase.ROLE_CONFIRM, confirmTime);
     // 狼队成员只发给狼人，避免好人客户端拿到完整狼队列表。
-    const wolfTeam = room.players
-      .filter(player => player.role !== null && isWolfRole(player.role, room.config.hybridRoles))
-      .map(player => player.id);
+    const wolfTeam = this.getWolfTeam(room);
     room.players.forEach(player => {
       this.io.to(player.id).emit('game:started', {
         gameState: this.getPublicGameState(gameState, player.id),
         myRole: player.role!,
-        wolfTeam: player.role !== null && isWolfRole(player.role, room.config.hybridRoles) ? wolfTeam : undefined
+        wolfTeam: this.isWolfPlayer(room, player) ? wolfTeam : undefined
       });
       this.emitSkillState(room, player);
     });
@@ -560,7 +613,7 @@ export class GameManager {
     const gameState = this.gameStates.get(room.id);
     if (!gameState || gameState.phase !== GamePhase.ROLE_CONFIRM) return;
     if (gameState.paused) {
-      socket.emit('game:error', { message: '游戏已暂停' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.paused });
       return;
     }
 
@@ -608,9 +661,7 @@ export class GameManager {
     if (!gameState) return;
 
     // 重连时重放私有信息和当前阶段，否则刷新页面会丢失身份/狼队视图。
-    const wolfTeam = room.players
-      .filter(roomPlayer => roomPlayer.role !== null && isWolfRole(roomPlayer.role, room.config.hybridRoles))
-      .map(roomPlayer => roomPlayer.id);
+    const wolfTeam = this.getWolfTeam(room);
 
     const isHiddenPhase = this.isHiddenDeathSkillPhase(gameState.phase);
     const isHiddenActor = this.getHiddenPhaseActorId(room.id, gameState) === player.id;
@@ -621,7 +672,7 @@ export class GameManager {
     this.io.to(player.id).emit('game:started', {
       gameState: this.getPublicGameState(gameState, player.id, publicPhase),
       myRole: player.role!,
-      wolfTeam: player.role !== null && isWolfRole(player.role, room.config.hybridRoles) ? wolfTeam : undefined
+      wolfTeam: this.isWolfPlayer(room, player) ? wolfTeam : undefined
     });
     this.emitSkillState(room, player);
 
@@ -636,16 +687,13 @@ export class GameManager {
       this.io.to(player.id).emit('game:roleConfirmed', { playerId });
     });
 
-    if (player.role !== null && isWolfRole(player.role, room.config.hybridRoles)) {
-      const wolfSelections = this.wolfSelections.get(room.id);
-      const selectionsObj: Record<string, string> = {};
-      wolfSelections?.forEach((targetId, wolfId) => { selectionsObj[wolfId] = targetId; });
-      this.io.to(player.id).emit('game:wolfSelectionUpdate', { selections: selectionsObj });
-
-      const wolfVotes = this.wolfVotes.get(room.id);
-      const wolfVotesObj: Record<string, string> = {};
-      wolfVotes?.forEach((targetId, wolfId) => { wolfVotesObj[wolfId] = targetId; });
-      this.io.to(player.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj });
+    if (this.isWolfPlayer(room, player)) {
+      this.io.to(player.id).emit('game:wolfSelectionUpdate', {
+        selections: this.mapToRecord(this.wolfSelections.get(room.id))
+      });
+      this.io.to(player.id).emit('game:wolfVoteUpdate', {
+        wolfVotes: this.mapToRecord(this.wolfVotes.get(room.id))
+      });
     }
 
     if (gameState.phase === GamePhase.NIGHT_WITCH) {
@@ -658,11 +706,11 @@ export class GameManager {
     const player = this.roomManager.getPlayerBySocket(socket);
     if (!room || !player) return;
     if (room.hostId !== player.id) {
-      socket.emit('game:error', { message: '只有房主可以暂停游戏' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.hostOnlyPause });
       return;
     }
     if (room.status !== 'playing') {
-      socket.emit('game:error', { message: '只有游戏进行中可以暂停' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.pauseOnlyWhenPlaying });
       return;
     }
 
@@ -692,7 +740,7 @@ export class GameManager {
     const player = this.roomManager.getPlayerBySocket(socket);
     if (!room || !player) return;
     if (room.hostId !== player.id) {
-      socket.emit('game:error', { message: '只有房主可以恢复游戏' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.hostOnlyResume });
       return;
     }
 
@@ -753,7 +801,8 @@ export class GameManager {
       return;
     }
 
-    this.emitPhaseChanged(roomId, phase, 30);
+    const timer = PHASE_DURATION_SECONDS.nightAction;
+    this.emitPhaseChanged(roomId, phase, timer);
     if (phase === GamePhase.NIGHT_WITCH) {
       this.emitWitchInfo(room);
       this.emitSkillState(room);
@@ -762,7 +811,7 @@ export class GameManager {
       this.emitSkillState(room);
     }
 
-    this.schedulePhaseTimeout(roomId, 30000, () => {
+    this.schedulePhaseTimeout(roomId, timer * 1000, () => {
       // 狼人阶段超时：未确认视为弃票，按已确认狼票结算。
       if (phase === GamePhase.NIGHT_WEREWOLF) {
         this.resolveWolfPhase(roomId, true);
@@ -779,24 +828,16 @@ export class GameManager {
     const target = this.getAliveTarget(ctx.room, targetId);
     if (!target) return;
     if (!this.canWolfTarget(ctx.room, target)) {
-      socket.emit('game:error', { message: '当前规则禁止狼人自刀或刀狼队友' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.wolfFriendlyFireForbidden });
       return;
     }
 
     // 记录选择（仅本地广播，不确认投票）
-    let selections = this.wolfSelections.get(ctx.room.id);
-    if (!selections) {
-      selections = new Map();
-      this.wolfSelections.set(ctx.room.id, selections);
-    }
+    const selections = this.getWolfSelections(ctx.room.id);
     selections.set(ctx.player.id, targetId);
 
     // 广播选择更新给狼队友
-    const selectionsObj: Record<string, string> = {};
-    selections.forEach((tid, wid) => { selectionsObj[wid] = tid; });
-    ctx.room.players
-      .filter(player => player.role !== null && isWolfRole(player.role, ctx.room.config.hybridRoles))
-      .forEach(player => this.io.to(player.id).emit('game:wolfSelectionUpdate', { selections: selectionsObj }));
+    this.emitWolfSelectionUpdate(ctx.room, selections);
   }
 
   werewolfKillByPlayer(roomId: string, playerId: string, targetId: string): boolean {
@@ -807,18 +848,10 @@ export class GameManager {
     if (!target) return false;
     if (!this.canWolfTarget(ctx.room, target)) return false;
 
-    let selections = this.wolfSelections.get(ctx.room.id);
-    if (!selections) {
-      selections = new Map();
-      this.wolfSelections.set(ctx.room.id, selections);
-    }
+    const selections = this.getWolfSelections(ctx.room.id);
     selections.set(ctx.player.id, targetId);
 
-    const selectionsObj: Record<string, string> = {};
-    selections.forEach((tid, wid) => { selectionsObj[wid] = tid; });
-    ctx.room.players
-      .filter(player => player.role !== null && isWolfRole(player.role, ctx.room.config.hybridRoles))
-      .forEach(player => this.io.to(player.id).emit('game:wolfSelectionUpdate', { selections: selectionsObj }));
+    this.emitWolfSelectionUpdate(ctx.room, selections);
     return true;
   }
 
@@ -829,33 +862,25 @@ export class GameManager {
     const selections = this.wolfSelections.get(ctx.room.id);
     const targetId = selections?.get(ctx.player.id);
     if (!targetId) {
-      socket.emit('game:error', { message: '请先选择目标' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.wolfTargetRequired });
       return;
     }
     const target = this.getAliveTarget(ctx.room, targetId);
     if (!target || !this.canWolfTarget(ctx.room, target)) {
       selections?.delete(ctx.player.id);
-      socket.emit('game:error', { message: '当前规则禁止狼人自刀或刀狼队友' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.wolfFriendlyFireForbidden });
       return;
     }
 
     // 确认投票
-    let votes = this.wolfVotes.get(ctx.room.id);
-    if (!votes) {
-      votes = new Map();
-      this.wolfVotes.set(ctx.room.id, votes);
-    }
+    const votes = this.getWolfVotes(ctx.room.id);
     votes.set(ctx.player.id, targetId);
 
     // 广播投票确认给狼队友
-    const wolfVotesObj: Record<string, string> = {};
-    votes.forEach((tid, wid) => { wolfVotesObj[wid] = tid; });
-    ctx.room.players
-      .filter(player => player.role !== null && isWolfRole(player.role, ctx.room.config.hybridRoles))
-      .forEach(player => this.io.to(player.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj }));
+    this.emitWolfVoteUpdate(ctx.room, votes);
 
     // 检查所有存活狼人是否都已确认投票
-    const wolves = ctx.room.players.filter(p => p.role !== null && isWolfRole(p.role, ctx.room.config.hybridRoles) && p.status === 'alive');
+    const wolves = this.getAliveWolves(ctx.room);
     const allVoted = wolves.every(w => votes.has(w.id));
 
     if (allVoted) {
@@ -876,20 +901,12 @@ export class GameManager {
       return false;
     }
 
-    let votes = this.wolfVotes.get(ctx.room.id);
-    if (!votes) {
-      votes = new Map();
-      this.wolfVotes.set(ctx.room.id, votes);
-    }
+    const votes = this.getWolfVotes(ctx.room.id);
     votes.set(ctx.player.id, targetId);
 
-    const wolfVotesObj: Record<string, string> = {};
-    votes.forEach((tid, wid) => { wolfVotesObj[wid] = tid; });
-    ctx.room.players
-      .filter(player => player.role !== null && isWolfRole(player.role, ctx.room.config.hybridRoles))
-      .forEach(player => this.io.to(player.id).emit('game:wolfVoteUpdate', { wolfVotes: wolfVotesObj }));
+    this.emitWolfVoteUpdate(ctx.room, votes);
 
-    const wolves = ctx.room.players.filter(p => p.role !== null && isWolfRole(p.role, ctx.room.config.hybridRoles) && p.status === 'alive');
+    const wolves = this.getAliveWolves(ctx.room);
     const allVoted = wolves.every(w => votes.has(w.id));
     if (allVoted) {
       this.resolveWolfPhase(ctx.room.id);
@@ -952,7 +969,7 @@ export class GameManager {
     });
     this.io.to(room.id).emit('game:systemMessage', {
       id: generateMessageId(),
-      content: `${this.getPlayerNumber(player)}号 ${player.name} 自曝，白天流程中断`,
+      content: wolfSelfRevealMessage(this.getPlayerNumber(player), player.name),
       timestamp: Date.now()
     });
 
@@ -962,8 +979,9 @@ export class GameManager {
     }
 
     gameState.day++;
-    this.emitPhaseChanged(room.id, GamePhase.DAY_SELF_REVEAL, 3);
-    this.schedulePhaseTimeout(room.id, 3000, () => this.startNightPhase(room.id));
+    const transitionSeconds = PHASE_DURATION_SECONDS.selfRevealTransition;
+    this.emitPhaseChanged(room.id, GamePhase.DAY_SELF_REVEAL, transitionSeconds);
+    this.schedulePhaseTimeout(room.id, transitionSeconds * 1000, () => this.startNightPhase(room.id));
     return { ok: true };
   }
 
@@ -999,7 +1017,11 @@ export class GameManager {
     });
     this.io.to(room.id).emit('game:systemMessage', {
       id: generateMessageId(),
-      content: `${this.getPlayerNumber(player)}号 ${player.name} 白狼王自曝，带走 ${target ? `${this.getPlayerNumber(target)}号 ${target.name}` : '一名玩家'}`,
+      content: whiteWolfKingExplodeMessage(
+        this.getPlayerNumber(player),
+        player.name,
+        target ? `${this.getPlayerNumber(target)}号 ${target.name}` : '一名玩家'
+      ),
       timestamp: Date.now()
     });
 
@@ -1009,8 +1031,9 @@ export class GameManager {
     }
 
     gameState.day++;
-    this.emitPhaseChanged(room.id, GamePhase.DAY_SELF_REVEAL, 3);
-    this.schedulePhaseTimeout(room.id, 3000, () => this.startNightPhase(room.id));
+    const transitionSeconds = PHASE_DURATION_SECONDS.selfRevealTransition;
+    this.emitPhaseChanged(room.id, GamePhase.DAY_SELF_REVEAL, transitionSeconds);
+    this.schedulePhaseTimeout(room.id, transitionSeconds * 1000, () => this.startNightPhase(room.id));
     return { ok: true };
   }
 
@@ -1020,7 +1043,7 @@ export class GameManager {
     const votes = this.wolfVotes.get(roomId);
     if (!room) return;
 
-    const wolves = room.players.filter(p => p.role !== null && isWolfRole(p.role, room.config.hybridRoles) && p.status === 'alive');
+    const wolves = this.getAliveWolves(room);
     const finalTarget = (votes && votes.size > 0)
       ? this.resolveWolfVote(votes, wolves)
       : this.pickRandomAliveNonWolf(room);
@@ -1055,7 +1078,7 @@ export class GameManager {
   private pickRandomAliveNonWolf(room: Room): string | null {
     const candidates = room.players.filter(player =>
       player.status === 'alive' &&
-      (player.role === null || !isWolfRole(player.role, room.config.hybridRoles))
+      !this.isWolfPlayer(room, player)
     );
     if (candidates.length === 0) return null;
     return candidates[Math.floor(Math.random() * candidates.length)].id;
@@ -1063,7 +1086,7 @@ export class GameManager {
 
   private canWolfTarget(room: Room, target: Player): boolean {
     if (room.config.allowWolfFriendlyFire) return true;
-    return target.role === null || !isWolfRole(target.role, room.config.hybridRoles);
+    return !this.isWolfPlayer(room, target);
   }
 
   seerCheck(socket: TypedSocket, targetId: string): void {
@@ -1099,19 +1122,19 @@ export class GameManager {
     const actions = this.nightActions.get(ctx.room.id);
     const killedTargetId = actions?.get('wolfKill')?.targetId ?? null;
     if (!killedTargetId) {
-      socket.emit('game:error', { message: '今晚没有可救目标' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.witchNoSaveTarget });
       return;
     }
     if (killedTargetId === ctx.player.id && !ctx.room.config.allowWitchSelfSave) {
-      socket.emit('game:error', { message: '女巫不能自救' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.witchSelfSaveForbidden });
       return;
     }
     if (ctx.player.skillUsed.witchSave) {
-      socket.emit('game:error', { message: '解药已使用' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.witchSaveUsed });
       return;
     }
     if (ctx.gameState.witchSaveUsed) {
-      socket.emit('game:error', { message: '本局解药已使用' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.witchSaveUsedThisGame });
       return;
     }
 
@@ -1144,7 +1167,7 @@ export class GameManager {
     if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.WITCH_POISON) || ctx.player.status === 'dead') return;
 
     if (ctx.player.skillUsed.witchPoison) {
-      socket.emit('game:error', { message: '毒药已使用' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.witchPoisonUsed });
       return;
     }
 
@@ -1183,7 +1206,7 @@ export class GameManager {
     if (!ctx || !ctx.player.role || !roleHasAbility(ctx.player.role, RoleAbility.GUARD_PROTECT) || ctx.player.status === 'dead') return;
 
     if (ctx.player.skillUsed.lastGuardTarget === targetId) {
-      socket.emit('game:error', { message: '不能连续两晚守护同一人' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.guardCannotRepeatTarget });
       return;
     }
 
@@ -1247,12 +1270,13 @@ export class GameManager {
 
     if (result.wolfKingCanShoot) {
       // 狼王先于天亮公告开枪；只通知狼王本人，其他玩家只看到安全的结算等待阶段。
-      const endsAt = this.setHiddenPhase(roomId, GamePhase.WOLF_KING_SHOOT, 15);
+      const timer = PHASE_DURATION_SECONDS.deathSkill;
+      const endsAt = this.setHiddenPhase(roomId, GamePhase.WOLF_KING_SHOOT, timer);
       room.players.forEach(player => {
-        this.emitPhaseToPlayer(player, gameState, 15, endsAt, 'game:phaseChanged');
+        this.emitPhaseToPlayer(player, gameState, timer, endsAt, 'game:phaseChanged');
       });
 
-      this.schedulePhaseTimeout(roomId, 15000, () => {
+      this.schedulePhaseTimeout(roomId, timer * 1000, () => {
         gameState.wolfKingCanShoot = false;
         this.startDayPhase(roomId, deathRecords);
       });
@@ -1269,7 +1293,8 @@ export class GameManager {
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
-    this.setPhaseClock(gameState, GamePhase.DAY_ANNOUNCE, 5);
+    const announceSeconds = PHASE_DURATION_SECONDS.dayAnnounce;
+    this.setPhaseClock(gameState, GamePhase.DAY_ANNOUNCE, announceSeconds);
     this.addNightResultReview(roomId, gameState, deadPlayers);
     const wolfKingSkillDeath = deadPlayers.find(deadPlayer => deadPlayer.reason === 'shot');
     if (wolfKingSkillDeath && gameState.lastKilledPlayer) {
@@ -1285,17 +1310,17 @@ export class GameManager {
     if (deadPlayers.length === 0) {
       this.io.to(roomId).emit('game:systemMessage', {
         id: generateMessageId(),
-        content: '昨晚是平安夜，没有人死亡',
+        content: SYSTEM_MESSAGES.peacefulNight,
         timestamp: Date.now()
       });
     }
 
     this.io.to(roomId).emit('game:phaseChanged', {
       phase: GamePhase.DAY_ANNOUNCE,
-      timer: 5,
+      timer: announceSeconds,
       endsAt: gameState.phaseEndsAt
     });
-    this.schedulePhaseTimeout(roomId, 5000, () => {
+    this.schedulePhaseTimeout(roomId, announceSeconds * 1000, () => {
       if (hunterToShoot) {
         // 猎人技能会临时打断白天流程，处理完后继续进入白天发言。
         this.startHunterShot(roomId, hunterToShoot.id, () => this.startSpeakingPhase(roomId));
@@ -1310,7 +1335,8 @@ export class GameManager {
     const gameState = this.gameStates.get(roomId);
     if (!room || !gameState) return;
 
-    this.setPhaseClock(gameState, GamePhase.DAY_SPEAKING, 60);
+    const speakingSeconds = PHASE_DURATION_SECONDS.daySpeaking;
+    this.setPhaseClock(gameState, GamePhase.DAY_SPEAKING, speakingSeconds);
     gameState.votes = {};
 
     const speaking: SpeakingState = {
@@ -1322,7 +1348,7 @@ export class GameManager {
 
     this.io.to(roomId).emit('game:phaseChanged', {
       phase: GamePhase.DAY_SPEAKING,
-      timer: 60,
+      timer: speakingSeconds,
       endsAt: gameState.phaseEndsAt,
       speaking
     });
@@ -1331,7 +1357,7 @@ export class GameManager {
   }
 
   private scheduleSpeakingTimeout(roomId: string): void {
-    this.schedulePhaseTimeout(roomId, 60000, () => this.advanceSpeaking(roomId));
+    this.schedulePhaseTimeout(roomId, PHASE_DURATION_SECONDS.daySpeaking * 1000, () => this.advanceSpeaking(roomId));
   }
 
   private advanceSpeaking(roomId: string, playerId?: string): void {
@@ -1355,7 +1381,7 @@ export class GameManager {
       return;
     }
 
-    this.emitPhaseChanged(roomId, GamePhase.DAY_SPEAKING, 60, gameState.speaking);
+    this.emitPhaseChanged(roomId, GamePhase.DAY_SPEAKING, PHASE_DURATION_SECONDS.daySpeaking, gameState.speaking);
     this.scheduleSpeakingTimeout(roomId);
   }
 
@@ -1370,7 +1396,7 @@ export class GameManager {
 
     const currentSpeakerId = ctx.gameState.speaking.order[ctx.gameState.speaking.currentIndex];
     if (ctx.player.id !== currentSpeakerId) {
-      socket.emit('game:error', { message: '还没轮到你发言' });
+      socket.emit('game:error', { message: GAME_ERROR_MESSAGES.notYourTurnToSpeak });
       return;
     }
 
@@ -1690,9 +1716,10 @@ export class GameManager {
     }
 
     gameState.day++;
-    gameState.phaseTimer = 3;
-    gameState.phaseEndsAt = Date.now() + 3000;
-    this.schedulePhaseTimeout(roomId, 3000, () => this.startNightPhase(roomId));
+    const transitionSeconds = PHASE_DURATION_SECONDS.afterDeathTransition;
+    gameState.phaseTimer = transitionSeconds;
+    gameState.phaseEndsAt = Date.now() + transitionSeconds * 1000;
+    this.schedulePhaseTimeout(roomId, transitionSeconds * 1000, () => this.startNightPhase(roomId));
   }
 
   private endGame(roomId: string, winner: 'villager' | 'werewolf'): void {

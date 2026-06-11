@@ -1,7 +1,19 @@
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../stores/gameStore';
-import { GamePhase, PublicDeathReason, ReviewEvent, Role, RoleAbility, ROLES, isWolfRole, roleHasAbility } from '@werewolf/shared';
+import { GamePhase, ReviewEvent, RoleAbility, ROLES, isWolfRole, roleHasAbility } from '@werewolf/shared';
+import {
+  REVIEW_FILTER_OPTIONS,
+  getDeathReasonClass,
+  getDeathReasonName,
+  getReviewFilter,
+  getReviewPlayerName,
+  getReviewSummary,
+  getReviewTagClass,
+  getReviewTagName
+} from '../game-ui/reviewText';
+import { PHASE_TIMER_SYNC_INTERVAL_MS, PHASE_TRANSITION_VISIBLE_MS } from '../game-ui/timing';
 import { ConfirmDialog, PendingConfirm } from './game/ConfirmDialog';
+import { GameOverModal } from './game/GameOverModal';
 import { GuardActionPanel } from './game/GuardActionPanel';
 import { HunterActionPanel } from './game/HunterActionPanel';
 import { PhaseHeader } from './game/PhaseHeader';
@@ -9,6 +21,7 @@ import { PhaseTransitionOverlay } from './game/PhaseTransitionOverlay';
 import { PhaseResultPanel } from './game/PhaseResultPanel';
 import { PlayerSeatGrid } from './game/PlayerSeatGrid';
 import { ReviewDrawer, ReviewFilter } from './game/ReviewDrawer';
+import { RoleConfirmOverlay } from './game/RoleConfirmOverlay';
 import { SeerActionPanel } from './game/SeerActionPanel';
 import { ToastLayer } from './game/ToastLayer';
 import { VoteActionPanel } from './game/VoteActionPanel';
@@ -44,7 +57,7 @@ export function Game() {
     syncTimer();
     const interval = setInterval(() => {
       syncTimer();
-    }, 250);
+    }, PHASE_TIMER_SYNC_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [gameState?.phase, gameState?.phaseEndsAt, gameState?.paused]);
 
@@ -56,7 +69,7 @@ export function Game() {
       gameState.phase === GamePhase.GAME_OVER
     ) return;
     setTransitionPhase(gameState.phase);
-    const timeout = setTimeout(() => setTransitionPhase(null), 1200);
+    const timeout = setTimeout(() => setTransitionPhase(null), PHASE_TRANSITION_VISIBLE_MS);
     return () => clearTimeout(timeout);
   }, [gameState?.phase]);
 
@@ -94,91 +107,15 @@ export function Game() {
     return player ? getPlayerNumber(player) : 999;
   };
 
-  const getDeathReasonName = (reason: PublicDeathReason) => {
-    const names: Record<PublicDeathReason, string> = {
-      night: '夜间死亡',
-      voted: '投票放逐',
-      skill: '技能带走',
-      self_exposed: '自曝出局',
-      exploded: '自曝带走'
-    };
-    return names[reason];
-  };
-
-  const getDeathReasonClass = (reason: PublicDeathReason) => {
-    switch (reason) {
-      case 'night': return 'bg-blood/15 text-blood-400 border-blood/20';
-      case 'voted': return 'bg-gold/15 text-gold border-gold/20';
-      case 'skill': return 'bg-amber-500/15 text-amber-300 border-amber-500/20';
-      case 'self_exposed': return 'bg-blood/20 text-blood-300 border-blood/30';
-      case 'exploded': return 'bg-purple-500/15 text-purple-300 border-purple-500/20';
-    }
-  };
-
   const getRevealedRoleName = (playerId?: string | null) => {
     if (!playerId || currentPhase !== GamePhase.GAME_OVER || !revealedPlayers) return null;
     const role = revealedPlayers.find(player => player.id === playerId)?.role;
     return role ? ROLES[role].name : null;
   };
 
-  const formatPlayerWithRole = (playerId?: string | null) => {
-    const playerName = getPlayerName(playerId ?? null);
-    const roleName = getRevealedRoleName(playerId);
-    return roleName ? `${roleName} ${playerName}` : playerName;
-  };
-
-  const getReviewPlayerName = (playerId: string | null) => {
-    if (playerId === null) return '弃票';
-    return formatPlayerWithRole(playerId);
-  };
-
-  const getReviewSummary = (event: ReviewEvent) => {
-    switch (event.type) {
-      case 'night_result': {
-        const deaths = event.deaths ?? [];
-        if (deaths.length === 0) return '平安夜';
-        return `${deaths.map(death => getReviewPlayerName(death.playerId)).join('、')} 夜间死亡`;
-      }
-      case 'vote_result':
-        if (event.eliminated) return `${getReviewPlayerName(event.eliminated)} 被投票放逐`;
-        return event.isTie ? '平票，无人出局' : '无人出局';
-      case 'self_reveal':
-        return `${formatPlayerWithRole(event.actorId)} 自曝出局，白天流程中断`;
-      case 'self_reveal_take':
-        return `${formatPlayerWithRole(event.actorId)} 自曝带走 ${getReviewPlayerName(event.targetId ?? null)}，白天流程中断`;
-      case 'skill_take': {
-        const actorRole = getRevealedRoleName(event.actorId);
-        const actor = formatPlayerWithRole(event.actorId);
-        const target = getReviewPlayerName(event.targetId ?? null);
-        if (actorRole === ROLES[Role.HUNTER].name || actorRole === ROLES[Role.WOLF_KING].name) {
-          return `${actor} 开枪带走 ${target}`;
-        }
-        return `${actor} 发动技能带走 ${target}`;
-      }
-      case 'skill_pass':
-        return `${formatPlayerWithRole(event.actorId)} 选择不发动技能`;
-    }
-  };
-
-  const getReviewFilter = (event: ReviewEvent): ReviewFilter => {
-    if (event.type === 'night_result') return 'night';
-    if (event.type === 'vote_result') return 'vote';
-    return 'skill';
-  };
-
-  const getReviewTagName = (event: ReviewEvent) => {
-    if (event.type === 'night_result') return '夜晚';
-    if (event.type === 'vote_result') return '投票';
-    if (event.type === 'self_reveal' || event.type === 'self_reveal_take') return '自曝';
-    return '技能';
-  };
-
-  const getReviewTagClass = (event: ReviewEvent) => {
-    if (event.type === 'night_result') return 'bg-blood/15 text-blood-400 border-blood/20';
-    if (event.eliminated) return 'bg-blood/15 text-blood-400 border-blood/20';
-    if (event.isTie) return 'bg-gold/10 text-gold border-gold/20';
-    if (event.interrupted) return 'bg-purple-500/15 text-purple-300 border-purple-500/20';
-    return 'bg-white/[0.04] text-moon-mist border-white/[0.04]';
+  const reviewTextContext = {
+    getPlayerName,
+    getRevealedRoleName
   };
 
   const getLatestDeath = (playerId: string) => {
@@ -355,12 +292,6 @@ export function Game() {
     }
     return groups;
   }, []);
-  const reviewFilterOptions: Array<{ value: ReviewFilter; label: string }> = [
-    { value: 'all', label: '全部' },
-    { value: 'night', label: '夜晚' },
-    { value: 'vote', label: '投票' },
-    { value: 'skill', label: '技能' }
-  ];
 
   return (
     <div className={`flex flex-col min-h-dvh relative transition-colors duration-1000 ${
@@ -381,81 +312,17 @@ export function Game() {
         <div className="absolute inset-0 bg-gradient-to-b from-amber-950/10 via-transparent to-transparent pointer-events-none" />
       )}
 
-      {/* Role Confirmation Overlay */}
       {currentPhase === GamePhase.ROLE_CONFIRM && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-forest/95 backdrop-blur-sm">
-          <div className="w-full max-w-sm">
-            {/* Role card */}
-            <div className="glass rounded-3xl p-6 text-center space-y-5">
-              {/* Role emoji */}
-              <div className="text-6xl">
-                {isWolfRole(myRole) ? '🐺' : '👤'}
-              </div>
-
-              {/* Role name */}
-              <div>
-                <div className="text-[10px] text-moon-dim tracking-widest mb-1">你的身份</div>
-                <div className="font-display text-2xl text-white">{ROLES[myRole].name}</div>
-              </div>
-
-              {/* Camp badge */}
-              <div className={`inline-block px-4 py-1.5 rounded-full text-xs font-medium tracking-wide ${
-                isWolfRole(myRole)
-                  ? 'bg-blood/20 text-blood-400 border border-blood/30'
-                  : 'bg-heal/20 text-heal-400 border border-heal/30'
-              }`}>
-                {isWolfRole(myRole) ? '狼人阵营' : '好人阵营'}
-              </div>
-
-              {/* Description */}
-              <div className="glass-light rounded-2xl p-4 space-y-3">
-                <div>
-                  <div className="text-[10px] text-moon-dim tracking-widest mb-1">角色介绍</div>
-                  <div className="text-sm text-moon leading-relaxed">{ROLES[myRole].description}</div>
-                </div>
-                <div className="h-px bg-white/5" />
-                <div>
-                  <div className="text-[10px] text-moon-dim tracking-widest mb-1">技能</div>
-                  <div className="text-sm text-heal-400 font-medium">{ROLES[myRole].skill}</div>
-                </div>
-              </div>
-
-              {/* Confirm status / button */}
-              {roleConfirmed ? (
-                <div className="space-y-1">
-                  <div className="text-heal-400 font-display text-sm">已确认</div>
-                  <div className="text-[10px] text-moon-dim">
-                    {confirmedPlayers.length}/{room.players.length} 人已确认
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={confirmRole}
-                  disabled={isPaused}
-                  className="w-full py-3.5 rounded-xl font-display text-base text-white
-                    bg-gradient-to-r from-heal-dark to-heal active:scale-[0.97]
-                    transition-transform shadow-lg shadow-heal/20 disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  确认身份
-                </button>
-              )}
-
-              {/* Countdown timer */}
-              <div className="space-y-2">
-                <div className="text-[10px] text-moon-dim tracking-widest">自动进入夜晚</div>
-                <div className="font-display text-4xl text-blood-400 animate-breathe">
-                  {gameState.phaseTimer}
-                </div>
-                <div className="w-full h-1 rounded-full bg-forest-100 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-blood-600 to-blood transition-all duration-1000"
-                    style={{ width: `${(gameState.phaseTimer / (room.config.roleConfirmTime || 30)) * 100}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <RoleConfirmOverlay
+          role={myRole}
+          roleConfirmed={roleConfirmed}
+          confirmedCount={confirmedPlayers.length}
+          totalPlayers={room.players.length}
+          phaseTimer={gameState.phaseTimer}
+          roleConfirmTime={room.config.roleConfirmTime}
+          isPaused={isPaused}
+          onConfirm={confirmRole}
+        />
       )}
 
       <PhaseHeader
@@ -778,87 +645,22 @@ export function Game() {
         </div>
       )}
 
-      {/* Game Over */}
       {currentPhase === GamePhase.GAME_OVER && gameState.winner && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70 backdrop-blur-md animate-fade-in">
-          <div className="glass-dark rounded-3xl p-6 w-full max-w-sm animate-moonrise">
-            <div className="text-center mb-6">
-              <div className="text-5xl mb-4">
-                {gameState.winner === 'villager' ? '☀️' : '🌙'}
-              </div>
-              <h2 className="font-display text-3xl mb-2 text-shadow-glow">
-                {gameState.winner === 'villager' ? '好人阵营' : '狼人阵营'}
-              </h2>
-              <p className="text-moon-dim text-sm">获得胜利</p>
-              <div className="mt-3 w-16 h-px bg-gradient-to-r from-transparent via-blood/60 to-transparent mx-auto" />
-            </div>
-
-            <div className="mb-6">
-              <h3 className="text-xs text-moon-dim tracking-wider uppercase mb-3 text-center">身份揭示</h3>
-              <div className="space-y-2">
-                {(revealedPlayers ?? room.players).map((player) => (
-                  <div
-                    key={player.id}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl ${
-                      player.status === 'dead' ? 'opacity-50' : ''
-                    } ${player.id === myId ? 'glass border-blood/10' : 'bg-forest-50/30'}`}
-                  >
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
-                      player.role !== null && isWolfRole(player.role)
-                        ? 'bg-blood/20 text-blood-400'
-                        : 'bg-heal/20 text-heal-400'
-                    }`}>
-                      {player.name.charAt(0)}
-                    </div>
-                    <span className={`flex-1 text-sm ${player.status === 'dead' ? 'line-through text-moon-mist' : ''}`}>
-                      {player.name}
-                    </span>
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      player.role !== null && isWolfRole(player.role)
-                        ? 'bg-blood/20 text-blood-400'
-                        : 'bg-heal/20 text-heal-400'
-                    }`}>
-                      {player.role ? ROLES[player.role].name : ''}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {deathEvents.length > 0 && (
-              <div className="mb-6">
-                <h3 className="text-xs text-moon-dim tracking-wider uppercase mb-3 text-center">死亡时间线</h3>
-                <div className="space-y-1.5 max-h-32 overflow-y-auto">
-                  {deathEvents.map((event, index) => (
-                    <div key={`${event.playerId}-${event.reason}-${event.day}-${index}`} className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-forest-50/30">
-                      <span className="text-xs text-moon-mist">DAY {event.day}</span>
-                      <span className="flex-1 text-sm text-moon truncate">{getPlayerName(event.playerId)}</span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full border shrink-0 ${getDeathReasonClass(event.reason)}`}>
-                        {getDeathReasonName(event.reason)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {sortedReviewEvents.length > 0 && (
-              <button
-                onClick={() => setVoteHistoryOpen(true)}
-                className="w-full mb-3 py-3 rounded-2xl glass text-moon font-display text-base active:scale-[0.97] transition-transform"
-              >
-                查看复盘记录
-              </button>
-            )}
-
-            <button
-              onClick={isHost ? resetRoom : leaveRoom}
-              className="w-full py-4 rounded-2xl bg-gradient-to-r from-blood-700 via-blood to-blood-700 text-white font-display text-lg tracking-wide active:scale-[0.97] transition-transform"
-            >
-              {isHost ? '重新开局' : '离开房间'}
-            </button>
-          </div>
-        </div>
+        <GameOverModal
+          winner={gameState.winner}
+          room={room}
+          myId={myId}
+          isHost={isHost}
+          revealedPlayers={revealedPlayers}
+          deathEvents={deathEvents}
+          hasReviewEvents={sortedReviewEvents.length > 0}
+          onOpenReview={() => setVoteHistoryOpen(true)}
+          onResetRoom={resetRoom}
+          onLeaveRoom={leaveRoom}
+          getPlayerName={getPlayerName}
+          getDeathReasonName={getDeathReasonName}
+          getDeathReasonClass={getDeathReasonClass}
+        />
       )}
 
       {/* Paused overlay */}
@@ -894,13 +696,13 @@ export function Game() {
         totalCount={sortedReviewEvents.length}
         groupedEvents={groupedReviewEvents}
         filter={reviewFilter}
-        filterOptions={reviewFilterOptions}
+        filterOptions={REVIEW_FILTER_OPTIONS}
         onFilterChange={setReviewFilter}
         onClose={() => setVoteHistoryOpen(false)}
         getPlayerNumberById={getPlayerNumberById}
-        getPlayerName={getReviewPlayerName}
-        getVoteTargetName={getReviewPlayerName}
-        getReviewSummary={getReviewSummary}
+        getPlayerName={(playerId) => getReviewPlayerName(playerId, reviewTextContext)}
+        getVoteTargetName={(playerId) => getReviewPlayerName(playerId, reviewTextContext)}
+        getReviewSummary={(event) => getReviewSummary(event, reviewTextContext)}
         getReviewTagName={getReviewTagName}
         getReviewTagClass={getReviewTagClass}
         getDeathReasonName={getDeathReasonName}
