@@ -8,6 +8,64 @@ const SESSION_STORAGE_KEY = 'werewolf.sessionId';
 // React 严格模式下组件可能重复挂载，用模块级标记避免重复注册 socket 监听。
 let socketInitialized = false;
 
+const getRemainingPhaseSeconds = (timer: number, endsAt: number | null): number => {
+  return endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
+};
+
+const buildPhaseUpdate = (
+  phase: GamePhase,
+  timer: number,
+  endsAt: number | null,
+  speaking: SpeakingState | undefined,
+  resetVoteState = false
+): Partial<PublicGameState> => {
+  const update: Partial<PublicGameState> = {
+    phase,
+    phaseTimer: getRemainingPhaseSeconds(timer, endsAt),
+    phaseEndsAt: endsAt,
+    paused: false,
+    pausedAt: null,
+    remainingMs: null,
+    speaking: speaking ?? null
+  };
+
+  if (resetVoteState && phase === GamePhase.DAY_VOTE) {
+    update.votes = {};
+  }
+  return update;
+};
+
+const getRuntimeResetState = (): Partial<GameStore> => ({
+  myRole: null,
+  gameState: null,
+  speaking: null,
+  seerResult: null,
+  witchInfo: null,
+  skillState: null,
+  roleConfirmed: false,
+  confirmedPlayers: [],
+  wolfVotes: {},
+  wolfSelections: {},
+  wolfTeam: [],
+  deathEvents: [],
+  voteResult: null,
+  revealedPlayers: null
+});
+
+const getHiddenDeathSkillState = (
+  gameState: PublicGameState,
+  phase: GamePhase.HUNTER_SHOOT | GamePhase.WOLF_KING_SHOOT,
+  timer: number,
+  endsAt: number | null
+): Partial<GameStore> => ({
+  speaking: null,
+  witchInfo: null,
+  gameState: {
+    ...gameState,
+    ...buildPhaseUpdate(phase, timer, endsAt, undefined)
+  }
+});
+
 const getPhaseScopedState = (
   phase: GamePhase,
   speaking: SpeakingState | undefined,
@@ -206,6 +264,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (socketInitialized) return;
     socketInitialized = true;
 
+    const showError = (message: string, extraState: Partial<GameStore> = {}) => {
+      set({ ...extraState, error: message });
+      setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
+    };
+
     socket.on('connect', () => {
       // 用稳定 sessionId 尝试恢复房间和身份，刷新页面不会直接丢局。
       const sessionId = localStorage.getItem(SESSION_STORAGE_KEY);
@@ -219,10 +282,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
         socket.emit('room:reconnect', { sessionId });
       }
     }
-
-    socket.on('room:created', ({ roomId }) => {
-      console.log('Room created:', roomId);
-    });
 
     socket.on('room:joined', ({ room, sessionId, playerId }) => {
       localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
@@ -248,28 +307,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const nextState: Partial<GameStore> = { room };
       if (room.status === 'waiting' && get().currentView === 'game') {
         // 重新开局会把客户端从游戏页拉回房间，并清空上一局的私有/临时状态。
-        nextState.currentView = 'room';
-        nextState.myRole = null;
-        nextState.gameState = null;
-        nextState.speaking = null;
-        nextState.seerResult = null;
-        nextState.witchInfo = null;
-        nextState.skillState = null;
-        nextState.roleConfirmed = false;
-        nextState.confirmedPlayers = [];
-        nextState.wolfVotes = {};
-        nextState.wolfSelections = {};
-        nextState.wolfTeam = [];
-        nextState.deathEvents = [];
-        nextState.voteResult = null;
-        nextState.revealedPlayers = null;
+        Object.assign(nextState, getRuntimeResetState(), { currentView: 'room' });
       }
       set(nextState);
     });
 
     socket.on('room:error', ({ message }) => {
-      set({ error: message, outgoingSwapRequest: null });
-      setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
+      showError(message, { outgoingSwapRequest: null });
     });
 
     socket.on('room:playerJoined', ({ player }) => {
@@ -296,14 +340,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
         set({ outgoingSwapRequest: null });
       }
       if (!success && message) {
-        set({ error: message });
-        setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
+        showError(message);
       }
     });
 
     socket.on('room:swapCancelled', ({ message }) => {
-      set({ pendingSwapRequest: null, error: message });
-      setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
+      showError(message, { pendingSwapRequest: null });
     });
 
     socket.on('game:started', ({ gameState, myRole, wolfTeam }) => {
@@ -334,23 +376,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const gameState = get().gameState;
       if (gameState) {
         // 服务端下发 endsAt，客户端按当前时间换算剩余秒数，保证多端显示一致。
-        const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
-        const update: Partial<PublicGameState> = {
-          phase,
-          phaseTimer,
-          phaseEndsAt: endsAt,
-          paused: false,
-          pausedAt: null,
-          remainingMs: null
-        };
-        if (speaking !== undefined) {
-          update.speaking = speaking;
-        } else {
-          update.speaking = null;
-        }
-        if (phase === GamePhase.DAY_VOTE) {
-          update.votes = {};
-        }
+        const update = buildPhaseUpdate(phase, timer, endsAt, speaking, true);
         set({
           ...getPhaseScopedState(phase, speaking, phase === GamePhase.NIGHT_WEREWOLF),
           gameState: { ...gameState, ...update }
@@ -377,23 +403,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.on('game:resumed', ({ phase, timer, endsAt, speaking }) => {
       const gameState = get().gameState;
       if (gameState) {
-        const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
-        const update: Partial<PublicGameState> = {
-          phase,
-          phaseTimer,
-          phaseEndsAt: endsAt,
-          paused: false,
-          pausedAt: null,
-          remainingMs: null
-        };
-        if (speaking !== undefined) {
-          update.speaking = speaking;
-        } else {
-          update.speaking = null;
-        }
         set({
           ...getPhaseScopedState(phase, speaking, false),
-          gameState: { ...gameState, ...update }
+          gameState: { ...gameState, ...buildPhaseUpdate(phase, timer, endsAt, speaking) }
         });
       }
     });
@@ -442,7 +454,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     socket.on('game:voteResult', ({ votes, eliminated, abstained, isTie, details }) => {
-      console.log('Vote result:', votes, eliminated, abstained);
       const gameState = get().gameState;
       const nextEntry = {
         day: gameState?.day ?? 0,
@@ -489,49 +500,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     socket.on('game:error', ({ message }) => {
-      set({ error: message });
-      setTimeout(() => set({ error: null }), ERROR_TOAST_DURATION_MS);
+      showError(message);
     });
 
-    socket.on('game:hunterRequired', ({ playerId, timer, endsAt }) => {
-      console.log('Hunter required:', playerId);
+    socket.on('game:hunterRequired', ({ timer, endsAt }) => {
       const gameState = get().gameState;
       if (gameState) {
-        const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
-        set({
-          speaking: null,
-          witchInfo: null,
-          gameState: {
-            ...gameState,
-            phase: GamePhase.HUNTER_SHOOT,
-            phaseTimer,
-            phaseEndsAt: endsAt,
-            paused: false,
-            pausedAt: null,
-            remainingMs: null
-          }
-        });
+        set(getHiddenDeathSkillState(gameState, GamePhase.HUNTER_SHOOT, timer, endsAt));
       }
     });
 
-    socket.on('game:wolfKingRequired', ({ playerId, timer, endsAt }) => {
-      console.log('Wolf king required:', playerId);
+    socket.on('game:wolfKingRequired', ({ timer, endsAt }) => {
       const gameState = get().gameState;
       if (gameState) {
-        const phaseTimer = endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : timer;
-        set({
-          speaking: null,
-          witchInfo: null,
-          gameState: {
-            ...gameState,
-            phase: GamePhase.WOLF_KING_SHOOT,
-            phaseTimer,
-            phaseEndsAt: endsAt,
-            paused: false,
-            pausedAt: null,
-            remainingMs: null
-          }
-        });
+        set(getHiddenDeathSkillState(gameState, GamePhase.WOLF_KING_SHOOT, timer, endsAt));
       }
     });
 
@@ -566,16 +548,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
     socket.emit('room:leave');
     localStorage.removeItem(SESSION_STORAGE_KEY);
     set({
+      ...getRuntimeResetState(),
       room: null,
       currentView: 'home',
       myId: null,
-      sessionId: null,
-      myRole: null,
-      gameState: null,
-      skillState: null,
-      deathEvents: [],
-      voteResult: null,
-      revealedPlayers: null
+      sessionId: null
     });
   },
 
